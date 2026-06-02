@@ -1,0 +1,57 @@
+{#
+  node_adversarial_critics_dialogue.xml.j2
+
+  Purpose:
+    Dialogue Critic prompt. Used by node_adversarial_critics for the second critic call.
+    Evaluates dialogue and character-specific voice for: character voice distinctiveness,
+    PAD dominance reflection in word choice, subtext (characters not saying what they mean),
+    and dialogue attribution flatness (overuse of "said" without action beats).
+
+    Output is grammar-constrained to a JSON array of FailureObject dicts.
+    critic_source must be "dialogue" for all entries.
+
+  Jinja2 Variables:
+    {{ current_draft }}         str  — The beat prose to evaluate.
+    {{ character_states }}      str  — Character names, personality traits, speech patterns,
+                                       and current PAD states (for dominance-in-dialogue check).
+    {{ pad_behavioral_constraints }} str — The tailored PAD behavioral directive for this beat.
+                                           Dialogue must reflect the dominant character's agency
+                                           or helplessness as specified here.
+    {{ author_style_baseline }} str  — Author's established voice for reference.
+
+  Output schema (grammar-constrained):
+    JSON array of FailureObject dicts:
+    [{
+      "error_code": "DIALOGUE_FLAT",
+      "offending_text": "<verbatim short substring>",
+      "suggested_fix": "<correction instruction>",
+      "critic_source": "dialogue"
+    }]
+    Empty array [] if no issues found.
+#}
+
+<prompt>
+  <system>
+    You are a dialogue editor for literary fiction. Identify dialogue and character voice
+    failures in the draft passage. Output a JSON array of FailureObject dicts only.
+    Empty array if no issues found.
+  </system>
+
+  <character_reference>
+    <characters>{{ character_states }}</characters>
+    <emotional_directive>{{ pad_behavioral_constraints }}</emotional_directive>
+  </character_reference>
+
+  <author_voice>{{ author_style_baseline }}</author_voice>
+
+  <draft>{{ current_draft }}</draft>
+
+  <instruction>
+    Identify DIALOGUE_FLAT failures: voice blending (character A sounds like character B),
+    PAD dominance not reflected in word choice or sentence structure, missing subtext
+    (characters say exactly what they mean when subtext would be more powerful), or
+    attribution failures (flat "said" sequences without action beats).
+    Quote offending_text verbatim. Keep quotes short (one sentence max).
+    critic_source must be "dialogue" for all entries.
+  </instruction>
+</prompt>

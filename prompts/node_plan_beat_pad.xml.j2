@@ -1,0 +1,60 @@
+{#
+  node_plan_beat_pad.xml.j2
+
+  Purpose:
+    PAD Grounded Translation Pipeline — Step 3 prompt. Used by the fast small-tier
+    PAD translator model (config.endpoints.pad_translator) to adapt a raw, generic
+    behavioral constraint string from the static PAD region lookup dictionary into
+    a narratively tailored constraint string for the specific scene context.
+
+    This is a SEPARATE prompt from node_plan_beat.xml.j2. node_plan_beat uses both:
+    - node_plan_beat.xml.j2 for steps 1-2 (beat partitioning + raw PAD coordinates).
+    - THIS template for step 3 (LLM adaptation of the raw constraint string).
+
+    If this LLM call fails (timeout, garbage output, or two consecutive failures after
+    one retry), node_plan_beat falls back to the raw_baseline_constraint string without
+    adaptation. Planning continues unblocked. Fallback is logged at WARNING level.
+
+  Jinja2 Variables:
+    {{ raw_baseline_constraint }}  str  — The deterministic raw behavioral constraint string
+                                         looked up from the static PAD region JSON dictionary.
+                                         This is the fallback if the translation fails.
+    {{ pad_region }}               str  — The PAD region key (e.g., "high_arousal_low_dominance").
+    {{ scene_intent }}             str  — One-sentence description of what this beat must accomplish
+                                         narratively. Provides the adaptation context.
+    {{ character_name }}           str  — The primary character whose PAD state this constraint
+                                         describes.
+    {{ beat_description }}         str  — The beat's description from step 1.
+
+  Output expected from model:
+    A single adapted behavioral constraint string — plain text, NOT JSON.
+    The string should be 1–3 sentences explaining how the character's emotional state
+    should manifest in their dialogue, actions, and internal monologue during this beat.
+    The constraint must be grounded in the specific scene context, not generic.
+    Example: "Marcus moves with deliberate aggression, his sentences clipped and
+    authoritative. He frames questions as commands and does not acknowledge Elena's
+    counter-arguments, signaling full agency over the negotiation."
+#}
+
+<prompt>
+  <system>
+    You are a behavioral psychology consultant for fiction. Adapt a generic emotional
+    constraint into a specific narrative behavioral directive. Output only the adapted
+    constraint text — no JSON, no explanation, no headers.
+  </system>
+
+  <context>
+    <character>{{ character_name }}</character>
+    <pad_region>{{ pad_region }}</pad_region>
+    <raw_baseline>{{ raw_baseline_constraint }}</raw_baseline>
+    <beat_intent>{{ beat_description }}</beat_intent>
+    <scene_context>{{ scene_intent }}</scene_context>
+  </context>
+
+  <instruction>
+    Rewrite the raw_baseline constraint as a specific behavioral directive for {{ character_name }}
+    during this beat. Ground it in the scene_context. 1–3 sentences. Plain text only.
+    The directive must make the PAD state ({{ pad_region }}) viscerally legible in
+    the character's actions and speech without naming the PAD coordinates directly.
+  </instruction>
+</prompt>

@@ -1,0 +1,39 @@
+# pyproject.toml
+#
+# UV package manager manifest for the FictionWriter multi-agent LLM orchestration system.
+# Enforces Python 3.12+ (required by falkordblite for Unix domain socket support).
+# Install all runtime dependencies with: uv sync
+# Run the server with: uv run app.py
+#
+# Optional [hf-tokenizer] extra installs transformers.AutoTokenizer — only needed
+# when tokenizer_family = "hf_auto" is set for any endpoint in config.yaml.
+# Omit it if all endpoints use "tiktoken" or "char_heuristic".
+
+[project]
+name = "fictionwriter"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "quart",
+    "langgraph",
+    "pydantic>=2.0",
+    "pydantic-settings",
+    "jinja2",
+    "pyyaml",
+    "chromadb",
+    "tiktoken",
+    "graphiti-core",
+    "falkordblite",
+    "numpy",
+    "httpx",
+    "typing-extensions",
+]
+
+[project.optional-dependencies]
+hf-tokenizer = ["transformers"]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

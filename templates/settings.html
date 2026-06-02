@@ -1,0 +1,21 @@
+<!--
+  templates/settings.html
+
+  Purpose:
+    Settings editor. Form-driven configuration interface for all config.yaml parameters.
+    Changes are submitted via POST /settings and take effect at the next beat boundary.
+
+    Sections:
+    - Threshold sliders: stel_cosine_distance (Dc gate), ewma_alpha, passive_voice_density,
+      voice_evolution_l2_norm_limit, etc. All sliders show current value and bounds.
+    - Generation caps: retry_count_max, craft_consultant_threshold, replan_count_max.
+    - Endpoint configuration: per-role base_url, model_name, tokenizer_family,
+      supports_concurrent_critics, grammar_constraint_strategy. Dynamic sliders for each.
+    - Endpoint connectivity test: "Test All Endpoints" button triggers POST /settings/test
+      and shows green/red status indicators per endpoint role.
+    - Ingestion settings: sliding_window_tokens, coreference_confidence_floor.
+-->
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+{% endblock %}

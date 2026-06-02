@@ -1,0 +1,60 @@
+{#
+  node_adversarial_critics_pacing.xml.j2
+
+  Purpose:
+    Pacing Critic prompt. Used by node_adversarial_critics for the third critic call.
+    Evaluates scene rhythm, tension curve, word budget adherence, and entry/exit
+    constraint satisfaction. The pacing critic is the beat's structural auditor —
+    it verifies the beat actually accomplishes what the beat plan requires.
+
+    Output is grammar-constrained to a JSON array of FailureObject dicts.
+    critic_source must be "pacing" for all entries.
+
+  Jinja2 Variables:
+    {{ current_draft }}          str  — The beat prose to evaluate.
+    {{ beat_entry_constraints }} str  — Required physical/narrative state at beat start.
+    {{ beat_exit_constraints }}  str  — Required physical/narrative state at beat end.
+    {{ beat_word_budget }}       int  — Target word count for this beat.
+    {{ actual_word_count }}      int  — Actual word count of the draft (pre-computed).
+    {{ scene_word_budget }}      int  — Total scene word budget for overage context.
+    {{ raptor_chapter_summary }} str  — Prior chapter RAPTOR summary for macro pacing context.
+
+  Output schema (grammar-constrained):
+    JSON array of FailureObject dicts:
+    [{
+      "error_code": "PACING_ISSUE",
+      "offending_text": "<verbatim short substring>",
+      "suggested_fix": "<correction instruction>",
+      "critic_source": "pacing"
+    }]
+    Empty array [] if no issues found.
+#}
+
+<prompt>
+  <system>
+    You are a narrative pacing editor. Evaluate whether the draft beat achieves its
+    planned entry/exit states and maintains appropriate scene rhythm. Output a JSON
+    array of FailureObject dicts only. Empty array if no issues found.
+  </system>
+
+  <beat_plan>
+    <entry_required>{{ beat_entry_constraints }}</entry_required>
+    <exit_required>{{ beat_exit_constraints }}</exit_required>
+    <word_target>{{ beat_word_budget }}</word_target>
+    <word_actual>{{ actual_word_count }}</word_actual>
+  </beat_plan>
+
+  <macro_context>{{ raptor_chapter_summary }}</macro_context>
+
+  <draft>{{ current_draft }}</draft>
+
+  <instruction>
+    Identify PACING_ISSUE failures:
+    1. Exit constraint not achieved: the beat ends without satisfying beat_exit_constraints.
+    2. Entry constraint violated: the beat contradicts or ignores beat_entry_constraints.
+    3. Severe word budget deviation: actual word count is more than 40% above or below target.
+    4. Rhythm failure: narrative acceleration/deceleration misaligned with scene tension needs.
+    Quote offending_text verbatim (or empty string for structural issues with no single offending passage).
+    critic_source must be "pacing" for all entries.
+  </instruction>
+</prompt>

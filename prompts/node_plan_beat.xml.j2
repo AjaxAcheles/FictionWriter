@@ -1,0 +1,63 @@
+{#
+  node_plan_beat.xml.j2
+
+  Purpose:
+    Scene Beat Partitioner prompt. Instructs the planner to slice the immediate scene
+    into actionable beats with strict physical entry/exit constraints. Each beat gets
+    a word budget, specific entry state (where characters are / what has just happened)
+    and exit state (what must be true when this beat ends). The raw PAD coordinates
+    are also generated here (step 1 of the PAD Translation Pipeline).
+
+    Note: the PAD Grounded Translation Pipeline's step 3 (LLM adaptation of the raw
+    behavioral constraint string) uses a SEPARATE prompt: node_plan_beat_pad.xml.j2.
+    This template handles steps 1–2 (beat partitioning + raw PAD coordinate generation).
+
+  Jinja2 Variables:
+    {{ scene_id }}              str  — The ID of the scene being partitioned.
+    {{ scene_description }}     str  — The scene's description from SQLite.
+    {{ scene_word_budget }}     int  — Total word budget for the scene.
+    {{ beats_per_scene_min }}   int  — Minimum number of beats required (from config).
+    {{ character_pad_states }}  str  — JSON of current CharacterEmotions PAD states from
+                                       SQLite for all characters active in this scene.
+                                       Format: {character_id: {pleasure, arousal, dominance}}.
+    {{ ewma_alpha }}            float — EWMA alpha value for PAD acceleration (from config).
+    {{ scene_entry_context }}   str  — What has just happened before this scene starts
+                                       (last committed beat's exit state).
+
+  Output expected from model:
+    Beat partitions:
+    - beats: list of {id, scene_id, description, word_budget, beat_index,
+        entry_constraints (str), exit_constraints (str),
+        raw_pad_targets: {character_id: {pleasure, arousal, dominance}},
+        pad_region: str (e.g., "high_arousal_low_dominance"),
+        status: "planned"}.
+    Format: JSON object.
+#}
+
+<prompt>
+  <system>
+    You are a scene beat architect. Partition this scene into actionable beats with
+    strict entry and exit constraints. Output valid JSON only.
+  </system>
+
+  <context>
+    <scene id="{{ scene_id }}">{{ scene_description }}</scene>
+    <word_budget>{{ scene_word_budget }}</word_budget>
+    <min_beats>{{ beats_per_scene_min }}</min_beats>
+    <entry_context>{{ scene_entry_context }}</entry_context>
+    <character_emotional_states>{{ character_pad_states }}</character_emotional_states>
+    <ewma_alpha>{{ ewma_alpha }}</ewma_alpha>
+  </context>
+
+  <instruction>
+    Partition the scene into at least {{ beats_per_scene_min }} beats. For each beat:
+    - id: unique (scene_id prefixed), scene_id, beat_index (0-based)
+    - description: one-sentence summary of what happens
+    - word_budget: approx tokens (sum must equal {{ scene_word_budget }})
+    - entry_constraints: physical state at beat start (location, who is present, what just happened)
+    - exit_constraints: what must be true when this beat ends
+    - raw_pad_targets: target PAD coordinates for each character (EWMA projection using alpha={{ ewma_alpha }})
+    - pad_region: string key for the PAD lookup table (e.g., "high_pleasure_high_arousal")
+    - status: "planned"
+  </instruction>
+</prompt>

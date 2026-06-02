@@ -1,0 +1,57 @@
+{#
+  node_craft_consultant.xml.j2
+
+  Purpose:
+    Craft Diagnosis prompt. Used by node_craft_consultant when the FSM is trapped
+    in a revision loop (retry_count > craft_consultant_threshold). Queries a
+    specialized craft-focused diagnostic model to identify the ROOT CAUSE of why
+    the draft keeps failing, not just what to fix at the surface level.
+
+    The output is a plain-text meta-directive (not JSON) injected into
+    active_context_package["craft_diagnosis"] for node_revise_prose to include
+    in its revision context. The diagnosis should address WHY the failures are
+    recurring, not list the same corrections already in the FailureObjects.
+
+  Jinja2 Variables:
+    {{ current_draft }}       str  — The draft that has failed multiple revision cycles.
+    {{ failures }}            str  — JSON array of accumulated FailureObjects showing
+                                     the pattern of what keeps failing.
+    {{ retry_count }}         int  — How many revision attempts have been made.
+    {{ beat_entry_constraints }} str — Beat entry state for structural context.
+    {{ beat_exit_constraints }}  str — Beat exit state for structural context.
+    {{ pad_behavioral_constraints }} str — PAD behavioral directive for this beat.
+
+  Output expected from model:
+    A plain-text diagnostic meta-directive (1–4 sentences). NOT JSON.
+    Must identify the structural root cause of the failure pattern, not the
+    symptoms. Should give the revision model a new approach to try.
+    Example: "The dialogue fails because character dominance is being expressed
+    through internal monologue rather than externalized behavior. Shift the
+    correction to action verbs and sentence length variation — the model is
+    compensating for flat action beats with over-narrated interiority."
+#}
+
+<prompt>
+  <system>
+    You are a master fiction craft consultant. Diagnose why a passage keeps failing
+    after {{ retry_count }} revision attempts. Identify the structural root cause.
+    Output only the diagnostic directive — no JSON, no headers, 1–4 sentences.
+  </system>
+
+  <failure_pattern>{{ failures }}</failure_pattern>
+
+  <current_draft>{{ current_draft }}</current_draft>
+
+  <beat_constraints>
+    <entry>{{ beat_entry_constraints }}</entry>
+    <exit>{{ beat_exit_constraints }}</exit>
+    <emotional_directive>{{ pad_behavioral_constraints }}</emotional_directive>
+  </beat_constraints>
+
+  <instruction>
+    Do not list the same surface issues already in the failure_pattern.
+    Identify the underlying structural problem — the root cause that makes surface
+    fixes fail repeatedly. Give one clear directive for a fundamentally different
+    approach. 1–4 sentences, plain text only.
+  </instruction>
+</prompt>

@@ -1,0 +1,46 @@
+{#
+  node_plan_arc.xml.j2
+
+  Purpose:
+    Arc-to-Act Expander prompt. Instructs the high-tier planner model to expand one
+    structural arc into act-level chapter milestones. The planner evaluates the Threads
+    priority queue to tag which subplots open, escalate, or close in this arc.
+
+  Jinja2 Variables:
+    {{ arc_id }}             str  — The ID of the arc being expanded.
+    {{ arc_description }}    str  — The arc's high-level description from SQLite.
+    {{ raptor_root_summary}} str  — The top-level RAPTOR global summary (may be empty
+                                    on first arc if no chapters have been committed yet).
+    {{ threads_queue }}      str  — JSON array of open Thread rows from SQLite, sorted by
+                                    priority_score DESC. Each entry: {id, description,
+                                    status, priority_score}.
+    {{ word_count_budget }}  int  — Approximate word count budget allocated to this arc
+                                    by node_plan_global.
+
+  Output expected from model:
+    A chapter stub plan for this arc:
+    - chapter_stubs: list of {id, arc_id, description, status: "planned"} dicts.
+    - thread_events: list of {thread_id, event: "open"|"escalate"|"close", chapter_index} dicts.
+    Format: JSON object.
+#}
+
+<prompt>
+  <system>
+    You are a story arc architect. Expand the given arc into chapter-level milestones.
+    Output valid JSON only — no prose, no explanation, no markdown.
+  </system>
+
+  <context>
+    <arc id="{{ arc_id }}">{{ arc_description }}</arc>
+    <word_count_budget>{{ word_count_budget }}</word_count_budget>
+    <raptor_global_summary>{{ raptor_root_summary }}</raptor_global_summary>
+    <active_threads>{{ threads_queue }}</active_threads>
+  </context>
+
+  <instruction>
+    Generate chapter stubs for this arc. For each chapter provide: id (arc_id prefixed),
+    arc_id, description, and status ("planned"). Also generate thread_events marking which
+    threads open, escalate, or close at which chapter index (0-based) within this arc.
+    Chapters should organically distribute the {{ word_count_budget }} word budget.
+  </instruction>
+</prompt>

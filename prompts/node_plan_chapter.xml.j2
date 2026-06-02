@@ -1,0 +1,61 @@
+{#
+  node_plan_chapter.xml.j2
+
+  Purpose:
+    Chapter Scene Scheduler prompt. Instructs the high-tier planner to define scenes
+    for the current chapter — setting shifts, local pacing, and scene word budgets.
+    The Granularity Protection Filter is applied in node_plan_chapter.py after this
+    prompt returns to ensure no scene falls below the minimum word budget.
+
+    When triggered by node_freeze_and_escalate Tier 4 (replan_count > 2), the
+    paradox_constraint is injected as a hard Thread-priority constraint, and the
+    planner must restructure the chapter schedule to avoid the paradox entity/event.
+
+  Jinja2 Variables:
+    {{ chapter_id }}           str  — The ID of the chapter being planned.
+    {{ chapter_description }}  str  — The chapter's high-level description from SQLite.
+    {{ arc_description }}      str  — Parent arc's description for structural context.
+    {{ raptor_chapter_summaries }} str — Last two chapter-level RAPTOR summaries (may be
+                                        empty for the first chapter of a story).
+    {{ threads_priority_queue }}   str — Active Threads sorted by priority_score DESC,
+                                        with their target resolutions.
+    {{ chapter_word_budget }}  int  — Target word count for this chapter (from arc plan).
+    {{ paradox_constraint }}   str  — If non-empty: a description of the THREAD_PARADOX
+                                        that caused this replan. Must be treated as a
+                                        forbidden outcome — no scene may contradict it.
+                                        Empty string on normal planning runs.
+
+  Output expected from model:
+    A scene schedule:
+    - scenes: list of {id, chapter_id, description, word_budget, ordering, status: "planned"}.
+    Format: JSON object.
+#}
+
+<prompt>
+  <system>
+    You are a chapter pacing architect. Define the scene schedule for this chapter.
+    Output valid JSON only — no prose, no explanation, no markdown.
+  </system>
+
+  <context>
+    <chapter id="{{ chapter_id }}">{{ chapter_description }}</chapter>
+    <parent_arc>{{ arc_description }}</parent_arc>
+    <word_budget>{{ chapter_word_budget }}</word_budget>
+    <prior_chapter_summaries>{{ raptor_chapter_summaries }}</prior_chapter_summaries>
+    <active_threads>{{ threads_priority_queue }}</active_threads>
+    {% if paradox_constraint %}
+    <forbidden_outcome>{{ paradox_constraint }}</forbidden_outcome>
+    <constraint_type>thread_paradox_resolution</constraint_type>
+    {% endif %}
+  </context>
+
+  <instruction>
+    Generate a scene schedule for this chapter. Each scene needs: id (chapter_id prefixed),
+    chapter_id, description, word_budget (sum must approximate {{ chapter_word_budget }}),
+    ordering (integer, sequential from 0), status ("planned").
+    {% if paradox_constraint %}
+    HARD CONSTRAINT: No scene may involve or lead to: {{ paradox_constraint }}.
+    Restructure the schedule to resolve active threads while avoiding this forbidden outcome.
+    {% endif %}
+  </instruction>
+</prompt>

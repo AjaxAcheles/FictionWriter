@@ -1,0 +1,83 @@
+# config.yaml
+#
+# Master runtime configuration for the FictionWriter FSM orchestration system.
+# Parsed at startup by core/config_loader.py into a validated AppConfig Pydantic object
+# with extra='forbid' — any unknown key here raises a fatal ValidationError at boot.
+#
+# Settings-page sliders write back to this file. node_plan_beat reads config at node
+# entry so UI changes take effect at the next beat boundary without a server restart.
+#
+# All hardcoded numeric thresholds in the Python codebase are references to keys here.
+
+project:
+  word_count_target: 300000         # Target manuscript length in words. arc exhaustion check in _commit_router compares SUM(word_count) against this.
+
+log_level: "DEBUG"                   # Logging verbosity for fsm.log. Options: DEBUG, INFO, WARNING, ERROR.
+
+thresholds:
+  stel_cosine_distance: 0.12        # Dc gate used by edge_mode_selector. Drafts with Dc >= this value are flagged for revision. (STEL cosine distance, 0-1 range)
+  ewma_alpha: 0.35                  # Exponentially Weighted Moving Average alpha for PAD emotional acceleration (ΔE). Higher = more reactive to recent beats.
+  coreference_confidence_floor: 0.65 # Minimum coreference link confidence before falling back to Maximum Likelihood Imputation during ingestion.
+  passive_voice_density: 0.25       # Fraction of passive sentences in a beat that triggers a PASSIVE_VOICE FailureObject. Density-based, not occurrence-based.
+  raptor_cluster_similarity: 0.65   # Cosine similarity threshold for RAPTOR scene clustering (Sprint 6 Leiden drop-in). Placeholder cluster_scenes() ignores this.
+  voice_evolution_l2_norm_limit: 0.30  # Maximum L2-norm distance a character's evolved voice embedding may drift from their frozen baseline.
+  programmatic_fast_path_multiplier: 0.7  # Dc multiplier applied in _programmatic_router fast path. Fast path fires only when Dc < stel_cosine_distance * this value.
+  beats_per_scene_min: 2            # Minimum number of beats that must be committed before node_plan_beat allows the scene pointer to advance.
+
+generation:
+  retry_count_max: 5                # edge_mode_selector routes to node_freeze_and_escalate when retry_count > this value.
+  craft_consultant_threshold: 3     # edge_mode_selector routes to node_craft_consultant when retry_count > this value (and <= retry_count_max).
+  replan_count_max: 2               # node_freeze_and_escalate routes to node_plan_chapter when replan_count > this value (instead of node_plan_beat).
+
+ingestion:
+  sliding_window_tokens: 2000       # Token window size for the non-blocking ingestion pipeline sliding-window chunker.
+
+# LLM inference endpoint routing. Each role maps to one EndpointConfig.
+# api_key values here are defaults; override per-role via .env (see .env.example).
+# tokenizer_family options: "tiktoken" (OpenAI-compatible), "hf_auto" (HuggingFace — requires [hf-tokenizer] extra), "char_heuristic" (char÷4 fallback).
+# grammar_constraint_strategy options: "gbnf" (sampler-level grammar), "json_mode" (vendor JSON mode).
+endpoints:
+  planner:                          # High-tier large model. Used by node_plan_global, node_plan_arc, node_plan_chapter.
+    base_url: "http://localhost:11434/v1"
+    api_key: "ollama"
+    model_name: "llama3.3:70b"
+    supports_inference_antislop: false
+    tokenizer_family: "tiktoken"
+    supports_concurrent_critics: false
+    grammar_constraint_strategy: "json_mode"
+
+  drafter:                          # Mid-to-large-tier model. Used by node_draft_prose, node_revise_prose.
+    base_url: "http://localhost:11434/v1"
+    api_key: "ollama"
+    model_name: "llama3.3:70b"
+    supports_inference_antislop: false
+    tokenizer_family: "tiktoken"
+    supports_concurrent_critics: false
+    grammar_constraint_strategy: "json_mode"
+
+  critic:                           # High-tier model. Used by node_adversarial_critics (all 3 critic calls).
+    base_url: "http://localhost:11434/v1"
+    api_key: "ollama"
+    model_name: "llama3.3:70b"
+    supports_inference_antislop: false
+    tokenizer_family: "tiktoken"
+    supports_concurrent_critics: false
+    grammar_constraint_strategy: "json_mode"
+
+  pad_translator:                   # Fast small-tier model. Used by node_plan_beat PAD Grounded Translation Pipeline (step 3).
+    base_url: "http://localhost:11434/v1"
+    api_key: "ollama"
+    model_name: "llama3.1:8b"
+    supports_inference_antislop: false
+    tokenizer_family: "tiktoken"
+    supports_concurrent_critics: false
+    grammar_constraint_strategy: "json_mode"
+
+  craft_consultant:                 # Small-to-mid-tier diagnostic model. Used by node_craft_consultant deadlock breaker.
+    base_url: "http://localhost:11434/v1"
+    api_key: "ollama"
+    model_name: "llama3.1:8b"
+    supports_inference_antislop: false
+    tokenizer_family: "tiktoken"
+    supports_concurrent_critics: false
+    grammar_constraint_strategy: "json_mode"

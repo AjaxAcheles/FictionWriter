@@ -1,0 +1,60 @@
+{#
+  node_plan_global.xml.j2
+
+  Purpose:
+    Master Timeline Generator prompt. Instructs the high-tier planner model to generate
+    the top-level narrative structure for the entire manuscript: thematic arcs, subplot
+    density envelope, and the master word-count budget allocation across arcs.
+
+    Also accepts existing arc context for continuation runs (when all planned arcs are
+    exhausted but the word_count_target has not been met). In continuation mode, the
+    model extends the story rather than restarting it.
+
+  Jinja2 Variables:
+    {{ genre }}              str  — The story's genre (e.g., "dark fantasy", "literary thriller").
+    {{ premise }}            str  — The one-paragraph story premise provided by the user.
+    {{ word_count_target }}  int  — Total target word count for the manuscript (from config).
+    {{ world_rules }}        str  — World-building rules and constraints from SQLite (may be empty).
+    {{ existing_arcs }}      str  — JSON or text summary of already-planned arcs (empty string
+                                    if this is a first run; populated for continuation mode).
+    {{ density_envelope }}   str  — Pacing density calculation: conflict count, character count,
+                                    subplot threads. Used to derive organic chapter count ranges.
+
+  Output expected from model:
+    A structured arc plan with:
+    - Top-level arc names, descriptions, and estimated word allocations.
+    - Subplot thread identifiers that will be tracked in the Threads table.
+    - The density model's recommended chapter count range per arc.
+    Format: JSON object matching the Arc schema for SQLite insertion.
+#}
+
+<prompt>
+  <system>
+    You are a master story architect. Your task is to generate the top-level narrative
+    structure for a {{ genre }} manuscript targeting {{ word_count_target }} words.
+    Output valid JSON only — no prose, no explanation, no markdown.
+  </system>
+
+  <context>
+    <premise>{{ premise }}</premise>
+    <world_rules>{{ world_rules }}</world_rules>
+    {% if existing_arcs %}
+    <existing_arcs>{{ existing_arcs }}</existing_arcs>
+    <mode>continuation</mode>
+    {% else %}
+    <mode>initial_plan</mode>
+    {% endif %}
+    <density_envelope>{{ density_envelope }}</density_envelope>
+  </context>
+
+  <instruction>
+    Generate a master arc plan. For each arc provide: id, description, status (planned),
+    estimated_word_count, subplot_threads (list of thread ids to open/close), and
+    recommended_chapter_count_range (min, max). Ensure all arcs together sum to
+    approximately {{ word_count_target }} words.
+    {% if existing_arcs %}
+    The existing arcs are already committed. Generate only continuation arcs that extend
+    the story naturally from where it left off.
+    {% endif %}
+  </instruction>
+</prompt>

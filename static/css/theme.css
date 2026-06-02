@@ -1,0 +1,63 @@
+/*
+  static/css/theme.css
+
+  Purpose:
+    Deep slate dark mode palette for the FictionWriter UI. Overrides Bootstrap 5.3
+    design tokens (CSS custom properties) to enforce a consistent dark aesthetic
+    throughout the application. All color decisions are centralized here; no inline
+    color styles should appear in any template.
+
+  Design palette intent:
+    - Background: deep slate (#0d1117 / --bs-body-bg)
+    - Surface cards: slightly lighter slate (#161b22 / --bs-card-bg)
+    - Accent: muted amber for active FSM states (#f0a500)
+    - Success / clean beat: muted green (#2ea043)
+    - Warning / critic failure: muted orange (#d29922)
+    - Danger / paradox / hard stop: muted red (#da3633)
+    - Text primary: near-white (#e6edf3)
+    - Text secondary: muted slate (#8b949e)
+
+  Sections (to be implemented in Sprint 1 UI pass):
+    - CSS custom property overrides for Bootstrap tokens
+    - Prose stream panel scrollbar styling
+    - PAD bar color gradients (pleasure = green↔red, arousal = blue↔orange, dominance = purple↔grey)
+    - Telemetry sidebar card styles
+    - Live Command Center fixed-bottom bar
+    - Claim Card flip animation styles
+    - Kanban column and drag handle styles
+*/
+
+/* Bootstrap dark theme token overrides */
+:root[data-bs-theme="dark"] {
+    /* Palette placeholders — fill during Sprint 1 UI pass */
+}
+
+/* Prose stream panel */
+.prose-stream {
+    /* Placeholder */
+}
+
+/* PAD state indicator bars */
+.pad-bar {
+    /* Placeholder */
+}
+
+/* Telemetry sidebar */
+.telemetry-sidebar {
+    /* Placeholder */
+}
+
+/* Live Command Center */
+.command-center {
+    /* Placeholder */
+}
+
+/* Claim Card */
+.claim-card {
+    /* Placeholder */
+}
+
+/* Kanban board */
+.kanban-col {
+    /* Placeholder */
+}

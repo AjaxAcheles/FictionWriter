@@ -1,0 +1,68 @@
+{#
+  node_adversarial_critics_continuity.xml.j2
+
+  Purpose:
+    Continuity Critic prompt. Used by node_adversarial_critics for the first of three
+    critic LLM calls. This critic checks:
+    1. Prose-level continuity: factual consistency with established world state (item
+       locations, physical descriptions, character knowledge, established rules).
+    2. Thread-consistency: verifies the draft does not contradict any open Thread's
+       required resolution. If a contradiction is found (e.g., a character dies who
+       has an unresolved Thread), the critic emits a THREAD_PARADOX FailureObject.
+
+    Output is grammar-constrained to a JSON array of FailureObject dicts.
+    node_adversarial_critics calls FailureObject.model_validate() on each entry;
+    schema-invalid output triggers a retry.
+
+  Jinja2 Variables:
+    {{ current_draft }}      str  — The beat prose to evaluate.
+    {{ graphiti_facts }}     str  — Point-in-time temporal facts from Graphiti. Used as
+                                    the authoritative reference for item ownership,
+                                    physical locations, and entity states.
+    {{ character_states }}   str  — Character descriptions, knowledge states, and PAD.
+    {{ open_threads }}       str  — JSON array of open Thread rows from SQLite:
+                                    [{id, description, status, required_resolution}].
+                                    Used for the Thread-consistency check.
+    {{ epistemic_beliefs }}  str  — Provisional coreference links flagged as unconfirmed.
+
+  Output schema (grammar-constrained):
+    JSON array of FailureObject dicts:
+    [{
+      "error_code": "CONTINUITY_BREAK" | "THREAD_PARADOX",
+      "offending_text": "<verbatim short substring>",
+      "suggested_fix": "<correction instruction>",
+      "critic_source": "continuity"
+    }]
+    Empty array [] if no issues found.
+#}
+
+<prompt>
+  <system>
+    You are a continuity editor for a long-form fiction manuscript. Identify factual
+    inconsistencies and thread contradictions in the draft passage below.
+    Output a JSON array of FailureObject dicts only — no prose, no explanation.
+    Empty array if no issues found.
+  </system>
+
+  <authoritative_world_state>
+    <temporal_facts>{{ graphiti_facts }}</temporal_facts>
+    <character_knowledge>{{ character_states }}</character_knowledge>
+    {% if epistemic_beliefs %}
+    <provisional_assumptions>{{ epistemic_beliefs }}</provisional_assumptions>
+    {% endif %}
+  </authoritative_world_state>
+
+  <open_threads>{{ open_threads }}</open_threads>
+
+  <draft>{{ current_draft }}</draft>
+
+  <instruction>
+    Check for:
+    1. CONTINUITY_BREAK: Any statement in the draft that contradicts the authoritative
+       world state (temporal_facts, character_knowledge). Quote the offending_text verbatim.
+    2. THREAD_PARADOX: Any event in the draft that contradicts a required resolution of an
+       open thread (e.g., a character death when that character has an unresolved Thread).
+       Use error_code "THREAD_PARADOX". This is a structural failure, not a quality failure.
+    Output JSON array. critic_source must be "continuity" for all entries.
+  </instruction>
+</prompt>

@@ -1,0 +1,83 @@
+{#
+  node_draft_prose.xml.j2
+
+  Purpose:
+    Primary Prose Generation prompt. Rendered by node_draft_prose and sent to the
+    mid-to-large-tier drafter model (config.endpoints.drafter) with stream=True.
+    Injects the full assembled context package from node_assemble_context: beat
+    constraints, character PAD behavioral constraints, RAPTOR summaries, Graphiti
+    temporal facts, and HNSW flavor exemplars.
+
+    Context may be pruned before rendering this template (HNSW and RAPTOR scene
+    summaries dropped first during token budget management) — the template must
+    handle empty strings gracefully for all optional sections.
+
+  Jinja2 Variables:
+    {{ beat_entry_constraints }}   str  — Physical state at beat start (who, where, what happened).
+    {{ beat_exit_constraints }}    str  — What must be true when this beat ends.
+    {{ beat_word_budget }}         int  — Target word count for this beat.
+    {{ pad_behavioral_constraints }} str — Tailored PAD behavioral directive from node_plan_beat
+                                          (or raw baseline if PAD translation failed).
+    {{ character_states }}         str  — Character names, traits, and current PAD states.
+    {{ thread_statuses }}          str  — Open subplot threads and their current status.
+    {{ graphiti_facts }}           str  — Point-in-time temporal facts from Graphiti (item
+                                          locations, belief states, entity relationships).
+    {{ epistemic_beliefs }}        str  — Mid-confidence provisional coreference links flagged
+                                          as unconfirmed. May be empty string.
+    {{ raptor_arc_summary }}       str  — RAPTOR arc-level summary. Always included.
+    {{ raptor_chapter_summary }}   str  — RAPTOR chapter-level summary. May be empty.
+    {{ raptor_scene_summary }}     str  — RAPTOR scene-level summary. Dropped first during pruning.
+    {{ hnsw_flavor }}              str  — Associative flavor exemplars from ChromaDB. May be empty.
+    {{ author_style_baseline }}    str  — Author voice description for stylistic consistency.
+
+  Output expected from model:
+    Prose text only. No JSON, no headers, no scene labels, no word count annotations.
+    Exactly the narrative prose for this beat, targeting {{ beat_word_budget }} words.
+#}
+
+<prompt>
+  <system>
+    You are a professional fiction author. Write the prose for the beat described below.
+    Match the author's established voice precisely. Output narrative prose only —
+    no headers, no JSON, no meta-commentary.
+  </system>
+
+  <author_style>{{ author_style_baseline }}</author_style>
+
+  <narrative_context>
+    <arc_summary>{{ raptor_arc_summary }}</arc_summary>
+    {% if raptor_chapter_summary %}
+    <chapter_summary>{{ raptor_chapter_summary }}</chapter_summary>
+    {% endif %}
+    {% if raptor_scene_summary %}
+    <scene_summary>{{ raptor_scene_summary }}</scene_summary>
+    {% endif %}
+  </narrative_context>
+
+  <world_state>
+    <facts>{{ graphiti_facts }}</facts>
+    {% if epistemic_beliefs %}
+    <unconfirmed_assumptions>{{ epistemic_beliefs }}</unconfirmed_assumptions>
+    {% endif %}
+    <threads>{{ thread_statuses }}</threads>
+  </world_state>
+
+  <characters>{{ character_states }}</characters>
+
+  {% if hnsw_flavor %}
+  <style_exemplars>{{ hnsw_flavor }}</style_exemplars>
+  {% endif %}
+
+  <beat>
+    <entry>{{ beat_entry_constraints }}</entry>
+    <exit>{{ beat_exit_constraints }}</exit>
+    <word_target>{{ beat_word_budget }}</word_target>
+    <emotional_directive>{{ pad_behavioral_constraints }}</emotional_directive>
+  </beat>
+
+  <instruction>
+    Write the prose for this beat. Honor the entry and exit constraints exactly.
+    The emotional directive is mandatory — the characters' behavior must embody it.
+    Target {{ beat_word_budget }} words. No scene headers, no labels, prose only.
+  </instruction>
+</prompt>

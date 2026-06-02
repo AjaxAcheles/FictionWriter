@@ -1,0 +1,20 @@
+<!--
+  templates/dashboard.html
+
+  Purpose:
+    Main generation dashboard. 2-column layout:
+    - Left (main): Live prose stream panel. Tokens arrive via SSE and are appended
+      here. beat_start events clear the panel for re-used beat_ids and wrap tokens
+      in data-beat-id divs for source attribution. Word count is shown below the stream.
+    - Right (sidebar): Telemetry panel with PAD radar chart (Chart.js), stylometric
+      drift line graph (Chart.js, Burrows' Delta advisory only), planning bullet feed
+      (marked.js renders markdown), critic reasoning panels (one per critic).
+
+    The Live Command Center (pause/resume/stop buttons) is fixed at the bottom.
+    Planning bullet stream, critic reasoning, and PAD updates arrive via the same
+    SSE /stream endpoint using event type routing in static/js/main.js.
+-->
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+{% endblock %}

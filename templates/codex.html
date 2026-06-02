@@ -1,0 +1,23 @@
+<!--
+  templates/codex.html
+
+  Purpose:
+    Memory Codex — read-mostly database explorer with drag-and-drop Kanban boards.
+    Provides a navigable view of all persistent memory stores for author inspection.
+
+    Panels (tab or accordion layout):
+    - Characters: table of all characters with PAD state bars (pleasure/arousal/dominance
+      as colored progress bars) and style profile status badge (distilled / not distilled).
+    - Threads: Kanban board with three columns (open / progressing / closed). Cards are
+      drag-and-drop reorderable to adjust priority_score. POST /codex/threads/priority
+      fires on drop.
+    - Branches: table of all chapter-boundary snapshot ZIPs with chapter_id, timestamp,
+      and size. "Restore" button triggers POST /codex/restore with an optional Reasons
+      textarea for the branch direction directive.
+    - Manuscript: scrollable prose output assembled from all committed beats.
+      Chapter navigation sidebar. Export button downloads as plain text.
+-->
+{% extends "base.html" %}
+{% block title %}Codex{% endblock %}
+{% block content %}
+{% endblock %}

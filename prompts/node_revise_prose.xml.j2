@@ -1,0 +1,63 @@
+{#
+  node_revise_prose.xml.j2
+
+  Purpose:
+    Targeted Prose Revision prompt. Rendered by node_revise_prose and sent to the
+    drafter model (config.endpoints.drafter). Provides the current draft and the
+    full list of FailureObjects to drive targeted corrections.
+
+    Uses verbatim-text targeting: each FailureObject contains an offending_text
+    (short verbatim substring) and a suggested_fix. The model is instructed to
+    locate the offending passage by the quoted text and apply the suggested fix.
+    This avoids integer span hallucination entirely.
+
+    If node_craft_consultant has run, its diagnosis is included as a meta_directive
+    to help break looping hallucinations. Optional section — may be empty.
+
+  Jinja2 Variables:
+    {{ current_draft }}         str  — The current beat prose text to revise.
+    {{ failures }}              str  — JSON array of FailureObject dicts:
+                                       [{error_code, offending_text, suggested_fix, critic_source}].
+                                       Each failure describes one required correction.
+    {{ beat_entry_constraints}} str  — Physical entry constraints (Tier B context only).
+    {{ beat_exit_constraints }} str  — Physical exit constraints (Tier B context only).
+    {{ pad_behavioral_constraints }} str — PAD behavioral directive (included for revision context).
+    {{ craft_diagnosis }}       str  — Optional meta-directive from node_craft_consultant.
+                                       Empty string if craft consultant has not run.
+    {{ revision_number }}       int  — Current retry_count value (for model awareness).
+
+  Output expected from model:
+    Revised prose text only — the full corrected beat, not just the changed passages.
+    No JSON, no headers, no annotations. The full beat prose.
+#}
+
+<prompt>
+  <system>
+    You are a professional fiction editor. Revise the prose below to fix the identified
+    issues. Output the complete corrected prose only — no JSON, no commentary.
+  </system>
+
+  <current_draft>{{ current_draft }}</current_draft>
+
+  <required_fixes>{{ failures }}</required_fixes>
+
+  <beat_constraints>
+    <entry>{{ beat_entry_constraints }}</entry>
+    <exit>{{ beat_exit_constraints }}</exit>
+    <emotional_directive>{{ pad_behavioral_constraints }}</emotional_directive>
+  </beat_constraints>
+
+  {% if craft_diagnosis %}
+  <structural_diagnosis>{{ craft_diagnosis }}</structural_diagnosis>
+  {% endif %}
+
+  <instruction>
+    Fix each issue listed in required_fixes. Locate each offending_text verbatim in the
+    draft and apply its suggested_fix. If the offending_text cannot be located, apply the
+    corrective intent to the full draft.
+    {% if craft_diagnosis %}
+    Use the structural_diagnosis to address the root cause, not just the surface symptoms.
+    {% endif %}
+    Output the complete revised prose. Honor the entry and exit constraints. Revision {{ revision_number }}.
+  </instruction>
+</prompt>
