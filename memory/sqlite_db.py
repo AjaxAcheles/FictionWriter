@@ -19,7 +19,7 @@ Purpose:
     to status='committed' after all three stores (SQLite, Graphiti, .jsonl) succeed.
     On startup, config_loader.py scans for pending rows indicating a prior crash.
 
-    Scenes table uses an integer `ordering` column (not `created_at`) for scene
+    Scenes table uses an integer `scene_index` column (not `created_at`) for scene
     ordering within a chapter — prevents chronological sort bugs when scenes are
     created in rapid succession.
 
@@ -36,8 +36,88 @@ Architecture role:
 """
 
 import sqlite3
+from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+
+
+_SCHEMA_SQL = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS Arcs (
+    arc_id      TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    summary     TEXT,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS Chapters (
+    chapter_id      TEXT PRIMARY KEY,
+    arc_id          TEXT NOT NULL REFERENCES Arcs(arc_id),
+    title           TEXT NOT NULL,
+    chapter_index   INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'planned',
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS Scenes (
+    scene_id        TEXT PRIMARY KEY,
+    chapter_id      TEXT NOT NULL REFERENCES Chapters(chapter_id),
+    scene_index     INTEGER NOT NULL,
+    prose_text      TEXT,
+    word_count      INTEGER NOT NULL DEFAULT 0,
+    committed_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS Beats (
+    beat_id         TEXT PRIMARY KEY,
+    scene_id        TEXT NOT NULL REFERENCES Scenes(scene_id),
+    beat_index      INTEGER NOT NULL,
+    beat_plan_json  TEXT,
+    status          TEXT NOT NULL DEFAULT 'planned'
+);
+
+CREATE TABLE IF NOT EXISTS Threads (
+    thread_id   TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT,
+    priority    REAL NOT NULL DEFAULT 0.0,
+    status      TEXT NOT NULL DEFAULT 'open'
+);
+
+CREATE TABLE IF NOT EXISTS Characters (
+    char_id     TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    role        TEXT,
+    description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS CharacterEmotions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    char_id     TEXT NOT NULL REFERENCES Characters(char_id),
+    beat_id     TEXT REFERENCES Beats(beat_id),
+    pleasure    REAL NOT NULL CHECK(pleasure >= -1.0 AND pleasure <= 1.0),
+    arousal     REAL NOT NULL CHECK(arousal >= -1.0 AND arousal <= 1.0),
+    dominance   REAL NOT NULL CHECK(dominance >= -1.0 AND dominance <= 1.0),
+    recorded_at TEXT NOT NULL,
+    UNIQUE(char_id, beat_id)
+);
+
+CREATE TABLE IF NOT EXISTS CommitIntent (
+    intent_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    beat_id     TEXT REFERENCES Beats(beat_id),
+    status      TEXT NOT NULL CHECK(status IN ('pending', 'committed')),
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS RaptorNodes (
+    node_id                 TEXT PRIMARY KEY,
+    level                   INTEGER NOT NULL,
+    summary_text            TEXT,
+    source_scene_ids_json   TEXT,
+    created_at              TEXT NOT NULL
+);
+"""
 
 
 def init_db(db_path: Path) -> None:
@@ -56,28 +136,10 @@ def init_db(db_path: Path) -> None:
 
     Outputs:
         None. Side effect: creates the SQLite file and all tables if they do not exist.
-
-    Table schemas created:
-        Arcs(id TEXT PK, description TEXT, status CHECK('planned'|'active'|'completed'))
-        Chapters(id TEXT PK, arc_id FK→Arcs, description TEXT, status CHECK(...))
-        Scenes(id TEXT PK, chapter_id FK→Chapters, description TEXT, word_budget INT,
-               ordering INT, status CHECK(...))
-        Beats(id TEXT PK, scene_id FK→Scenes, description TEXT, word_budget INT,
-              beat_index INT, entry_constraints TEXT, exit_constraints TEXT,
-              pad_constraint TEXT, status CHECK(...))
-        Threads(id TEXT PK, description TEXT, status CHECK('open'|'progressing'|'closed'),
-                priority_score REAL)
-        Characters(id TEXT PK, name TEXT, description TEXT)
-        CharacterEmotions(id TEXT PK, character_id FK→Characters, pleasure REAL
-                          CHECK(pleasure BETWEEN -1.00 AND 1.00), arousal REAL CHECK(...),
-                          dominance REAL CHECK(...), updated_at TEXT)
-        CommitIntent(id INTEGER PK AUTOINCREMENT, beat_id TEXT, arc_id TEXT,
-                     chapter_id TEXT, scene_id TEXT, beat_index INT,
-                     status CHECK('pending'|'committed'), initiated_at TEXT, completed_at TEXT)
-        RaptorNodes(id TEXT PK, parent_id TEXT FK→RaptorNodes, level TEXT
-                    CHECK('beat'|'scene'|'chapter'|'arc'|'global'), summary TEXT, updated_at TEXT)
     """
-    pass
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_SQL)
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
@@ -97,7 +159,10 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
         sqlite3.Connection — open connection. Caller is responsible for closing
         (or using as a context manager for automatic close on commit/rollback).
     """
-    pass
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 def scan_pending_commit_intents(db_path: Path) -> list[dict]:
@@ -117,10 +182,20 @@ def scan_pending_commit_intents(db_path: Path) -> list[dict]:
 
     Outputs:
         List[dict]: Zero or more dicts representing pending CommitIntent rows.
-            Each dict contains: id, beat_id, arc_id, chapter_id, scene_id,
-            beat_index, status, initiated_at. Empty list if no pending rows exist.
+            Each dict contains: intent_id, beat_id, status, created_at.
+            Empty list if no pending rows exist.
     """
-    pass
+    try:
+        with closing(get_connection(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT intent_id, beat_id, status, created_at "
+                "FROM CommitIntent WHERE status='pending'"
+            ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            return []
+        raise
 
 
 def upsert_beat(db_path: Path, beat_data: dict) -> None:
@@ -135,19 +210,30 @@ def upsert_beat(db_path: Path, beat_data: dict) -> None:
 
     Inputs:
         db_path: Path — path to the SQLite database file.
-        beat_data: dict — must contain 'id' (beat_id key) and all required Beat
-            table columns. PAD states for affected characters are committed
-            separately via upsert_character_emotion().
+        beat_data: dict — must contain 'beat_id', 'scene_id', 'beat_index',
+            'beat_plan_json', 'status'.
 
     Outputs:
         None. Side effect: inserts or updates one Beat row in the Beats table.
     """
-    pass
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO Beats (beat_id, scene_id, beat_index, beat_plan_json, status)
+            VALUES (:beat_id, :scene_id, :beat_index, :beat_plan_json, :status)
+            ON CONFLICT(beat_id) DO UPDATE SET
+                beat_index      = excluded.beat_index,
+                beat_plan_json  = excluded.beat_plan_json,
+                status          = excluded.status
+            """,
+            beat_data,
+        )
+        conn.commit()
 
 
 def upsert_character_emotion(db_path: Path, character_id: str, pad: dict) -> None:
     """
-    Insert or update a CharacterEmotions row for one character.
+    Insert or update a CharacterEmotions row for one character per beat.
 
     Purpose:
         Called by node_commit_transaction as part of the SQLite write step.
@@ -159,12 +245,34 @@ def upsert_character_emotion(db_path: Path, character_id: str, pad: dict) -> Non
     Inputs:
         db_path: Path — path to the SQLite database file.
         character_id: str — the character whose PAD state is being updated.
-        pad: dict — must contain 'pleasure', 'arousal', 'dominance' floats.
+        pad: dict — must contain 'beat_id', 'pleasure', 'arousal', 'dominance'.
 
     Outputs:
         None. Side effect: inserts or updates one CharacterEmotions row.
     """
-    pass
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO CharacterEmotions
+                (char_id, beat_id, pleasure, arousal, dominance, recorded_at)
+            VALUES (:char_id, :beat_id, :pleasure, :arousal, :dominance, :recorded_at)
+            ON CONFLICT(char_id, beat_id) DO UPDATE SET
+                pleasure    = excluded.pleasure,
+                arousal     = excluded.arousal,
+                dominance   = excluded.dominance,
+                recorded_at = excluded.recorded_at
+            """,
+            {
+                "char_id": character_id,
+                "beat_id": pad.get("beat_id"),
+                "pleasure": pad["pleasure"],
+                "arousal": pad["arousal"],
+                "dominance": pad["dominance"],
+                "recorded_at": recorded_at,
+            },
+        )
+        conn.commit()
 
 
 def get_remaining_beats(db_path: Path, scene_id: str, current_beat_index: int) -> list[dict]:
@@ -186,27 +294,41 @@ def get_remaining_beats(db_path: Path, scene_id: str, current_beat_index: int) -
         List[dict]: Remaining Beat rows ordered by beat_index ASC. Empty list if
             all beats in the scene are committed.
     """
-    pass
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM Beats "
+            "WHERE scene_id = ? AND beat_index > ? "
+            "ORDER BY beat_index ASC",
+            (scene_id, current_beat_index),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_remaining_scenes(db_path: Path, chapter_id: str) -> list[dict]:
     """
-    Return all Scene rows for a chapter with status != 'completed', ordered by ordering ASC.
+    Return all Scene rows for a chapter with status != 'completed', ordered by scene_index ASC.
 
     Purpose:
         Called by edge_commit_router to determine whether more scenes remain in the
-        current chapter. Uses the `ordering` integer column (not created_at) for sort
-        stability when scenes were created in rapid succession.
+        current chapter. Uses the `scene_index` integer column (not created_at) for
+        sort stability when scenes were created in rapid succession.
 
     Inputs:
         db_path: Path — path to the SQLite database file.
         chapter_id: str — the active chapter's ID.
 
     Outputs:
-        List[dict]: Remaining (not completed) Scene rows ordered by ordering ASC.
+        List[dict]: Remaining (not completed) Scene rows ordered by scene_index ASC.
             Empty list if all scenes in the chapter are completed.
     """
-    pass
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM Scenes "
+            "WHERE chapter_id = ? AND committed_at IS NULL "
+            "ORDER BY scene_index ASC",
+            (chapter_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_remaining_chapters(db_path: Path, arc_id: str) -> list[dict]:
@@ -225,12 +347,19 @@ def get_remaining_chapters(db_path: Path, arc_id: str) -> list[dict]:
         List[dict]: Remaining (not completed) Chapter rows. Empty list if all
             chapters in the arc are completed.
     """
-    pass
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM Chapters "
+            "WHERE arc_id = ? AND status != 'completed' "
+            "ORDER BY chapter_index ASC",
+            (arc_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_total_word_count(db_path: Path) -> int:
     """
-    Return SUM(word_count) across all committed Beat rows.
+    Return SUM(word_count) across all committed Scene rows.
 
     Purpose:
         Called by edge_commit_router's arc exhaustion check to determine whether
@@ -242,6 +371,10 @@ def get_total_word_count(db_path: Path) -> int:
         db_path: Path — path to the SQLite database file.
 
     Outputs:
-        int: Total committed word count across all beats and arcs.
+        int: Total committed word count across all scenes.
     """
-    pass
+    with closing(get_connection(db_path)) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(word_count), 0) FROM Scenes WHERE committed_at IS NOT NULL"
+        ).fetchone()
+    return int(row[0])

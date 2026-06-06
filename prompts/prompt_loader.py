@@ -29,7 +29,7 @@ Architecture role:
 from pathlib import Path
 from typing import Optional
 
-from jinja2 import Environment, FileSystemLoader, TemplateNotFound
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateNotFound
 
 PROMPTS_DIR = Path(__file__).parent
 
@@ -73,7 +73,12 @@ class PromptLoader:
         Outputs:
             None. Side effect: self.env is initialized and ready for template loading.
         """
-        pass
+        resolved = prompts_dir if prompts_dir is not None else PROMPTS_DIR
+        self.env = Environment(
+            loader=FileSystemLoader(str(resolved)),
+            undefined=StrictUndefined,
+            autoescape=False,
+        )
 
     def load_and_render(self, template_name: str, context: dict) -> str:
         """
@@ -102,4 +107,12 @@ class PromptLoader:
             jinja2.UndefinedError: If a variable referenced in the template is missing
                 from the context dict.
         """
-        pass
+        try:
+            template = self.env.get_template(template_name)
+        except TemplateNotFound:
+            search_path = self.env.loader.searchpath[0]
+            raise TemplateNotFound(
+                template_name,
+                f"Template '{template_name}' not found in '{search_path}'",
+            )
+        return template.render(**context)

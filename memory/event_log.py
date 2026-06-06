@@ -44,8 +44,11 @@ Architecture role:
 """
 
 import json
+import threading
 from pathlib import Path
 from typing import Iterator
+
+_write_lock = threading.Lock()
 
 
 def write_event(log_path: Path, payload: dict) -> None:
@@ -71,7 +74,11 @@ def write_event(log_path: Path, payload: dict) -> None:
     Outputs:
         None. Side effect: appends one line to the .jsonl file.
     """
-    pass
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    with _write_lock:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
 
 
 def iter_events(log_path: Path) -> Iterator[dict]:
@@ -91,7 +98,13 @@ def iter_events(log_path: Path) -> Iterator[dict]:
         Iterator[dict]: Yields one deserialized event dict per line, in chronological
             (append) order. Does not load the entire file into memory.
     """
-    pass
+    if not log_path.exists():
+        return
+    with log_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
 
 
 def iter_events_after_checkpoint(
@@ -121,4 +134,9 @@ def iter_events_after_checkpoint(
         Iterator[dict]: Yields deserialized event dicts for beats committed after
             the checkpoint, in chronological order.
     """
-    pass
+    past_checkpoint = False
+    for event in iter_events(log_path):
+        if past_checkpoint:
+            yield event
+        elif event.get("beat_id") == checkpoint_beat_id:
+            past_checkpoint = True

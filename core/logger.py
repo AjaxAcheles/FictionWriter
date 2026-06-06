@@ -40,7 +40,12 @@ _JSON_FORMATTER = logging.Formatter("%(message)s")
 
 
 def configure_log_level(level_str: str) -> None:
-    """Apply AppConfig.log_level to all loggers created by this module."""
+    """Set the module-level log level and apply it to the llm_io logger if already created.
+
+    FSM node loggers (created by get_logger()) are not updated here — they are always
+    created after this call at startup, so they inherit _log_level correctly. Mid-run
+    reconfiguration of node loggers is a Sprint 4 concern.
+    """
     global _log_level
     _log_level = getattr(logging, level_str.upper(), logging.DEBUG)
     for name in ("llm_io",):

@@ -36,7 +36,10 @@ Architecture role:
     - Initialized by core/runtime.py — creates default JSON stubs if files are absent.
 """
 
+import copy
 import json
+import tempfile
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +47,31 @@ import numpy as np
 
 STYLES_DIR = Path("data/styles")
 AUTHOR_STYLE_FILE = STYLES_DIR / "style_author.json"
+
+_DEFAULT_PROFILE = {
+    "is_frozen": False,
+    "frozen_baseline": {"burrows_delta": [], "stel": []},
+    "rolling_ema": {"burrows_delta": [], "stel": []},
+}
+
+
+def _profile_path(styles_dir: Path, store_id: str) -> Path:
+    return styles_dir / f"style_{store_id}.json"
+
+
+def _write_atomic(path: Path, data: dict) -> None:
+    """Write JSON to a temp file then rename — atomic on POSIX and Windows (same volume)."""
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def init_style_store(styles_dir: Path) -> None:
@@ -62,7 +90,10 @@ def init_style_store(styles_dir: Path) -> None:
     Outputs:
         None. Side effect: creates directory and/or default style_author.json.
     """
-    pass
+    styles_dir.mkdir(parents=True, exist_ok=True)
+    author_path = _profile_path(styles_dir, "author")
+    if not author_path.exists():
+        _write_atomic(author_path, _DEFAULT_PROFILE)
 
 
 def get_author_style(styles_dir: Path) -> dict:
@@ -72,7 +103,8 @@ def get_author_style(styles_dir: Path) -> dict:
     Purpose:
         Reads style_author.json and returns the full profile dict. Called by
         node_programmatic_audit (for Burrows' Delta baseline) and edge_mode_selector
-        (for STEL cosine distance calculation).
+        (for STEL cosine distance calculation). Returns the default profile structure
+        if the file does not exist.
 
     Inputs:
         styles_dir: Path — path to the styles directory.
@@ -82,7 +114,11 @@ def get_author_style(styles_dir: Path) -> dict:
             is_frozen (bool), frozen_baseline (dict with 'burrows_delta' and 'stel'
             arrays), rolling_ema (dict with same structure).
     """
-    pass
+    author_path = _profile_path(styles_dir, "author")
+    if not author_path.exists():
+        return copy.deepcopy(_DEFAULT_PROFILE)
+    with author_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def get_character_style(styles_dir: Path, character_id: str) -> Optional[dict]:
@@ -102,7 +138,11 @@ def get_character_style(styles_dir: Path, character_id: str) -> Optional[dict]:
         Optional[dict]: Character style profile dict (same structure as author profile),
             or None if the character has no style file yet.
     """
-    pass
+    char_path = _profile_path(styles_dir, f"char_{character_id}")
+    if not char_path.exists():
+        return None
+    with char_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def update_rolling_ema(
@@ -122,9 +162,7 @@ def update_rolling_ema(
         Formula: ema_new = alpha * new_value + (1 - alpha) * ema_old.
         ewma_alpha from config.thresholds.ewma_alpha (default 0.35).
 
-        The frozen_baseline is never modified by this function — it is set once
-        during initial distillation and read-only thereafter (except for Voice Evolution
-        updates which must pass the L2-norm check).
+        Sprint 3+ implementation — not wired in Sprint 1.
 
     Inputs:
         styles_dir: Path — path to the styles directory.
@@ -157,6 +195,8 @@ def check_voice_evolution_boundary(
         (evolution is rejected — the character's voice has drifted too far from
         their original baseline, indicating uncontrolled voice degradation).
 
+        Sprint 3+ implementation — not wired in Sprint 1.
+
     Inputs:
         styles_dir: Path — path to the styles directory.
         character_id: str — the character whose baseline would be updated.
@@ -168,7 +208,7 @@ def check_voice_evolution_boundary(
         bool: True if L2 distance <= l2_norm_limit (evolution permitted).
               False if L2 distance > l2_norm_limit (evolution rejected).
     """
-    pass
+    return True
 
 
 def compute_stel_cosine_distance(

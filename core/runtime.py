@@ -124,8 +124,13 @@ async def reset_resources(config: AppConfig) -> None:
     """
     SQLITE_PATH.unlink(missing_ok=True)
 
-    if GRAPHITI_PATH.exists():
+    # FalkorDB Lite may persist data/graphiti.db as either a single file or a
+    # directory depending on the driver build — delete whichever form exists so
+    # the reset path never raises NotADirectoryError / IsADirectoryError.
+    if GRAPHITI_PATH.is_dir():
         shutil.rmtree(GRAPHITI_PATH)
+    else:
+        GRAPHITI_PATH.unlink(missing_ok=True)
 
     for snapshot in SNAPSHOTS_DIR.glob("*.zip"):
         snapshot.unlink()

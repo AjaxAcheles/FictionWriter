@@ -13,8 +13,9 @@ Purpose:
     crashed mid-commit. load_config() flags these for human review or automated
     replay before allowing the FSM to resume.
 
-    API key fields in EndpointConfig are overridable via environment variables
-    (see .env.example) using pydantic-settings nested env var syntax.
+    API key fields in EndpointConfig are read from config.yaml. Environment-variable
+    override (pydantic-settings nested env syntax) is deferred to a later sprint —
+    AppConfig is a plain BaseModel in Sprint 1, so values come solely from the YAML.
 
 Architecture role:
     - Called once by app.py create_app() and stored in app.config["APP_CONFIG"].
@@ -27,7 +28,6 @@ Architecture role:
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -245,7 +245,7 @@ def load_config(config_path: Path = Path("config.yaml")) -> AppConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with config_path.open("r") as f:
+    with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     config = AppConfig(**raw)
@@ -276,6 +276,11 @@ def _scan_commit_intents_at_startup(db_path: Path) -> None:
             )
         else:
             logger.debug("CommitIntent startup scan: clean (no pending rows).")
-    except sqlite3.OperationalError:
-        # CommitIntent table not yet created (schema not initialized).
-        logger.debug("CommitIntent startup scan: table absent, skipping.")
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            # CommitIntent table not yet created (schema not initialized).
+            logger.debug("CommitIntent startup scan: table absent, skipping.")
+            return
+        # Any other operational error (locked/corrupt DB, disk I/O) is a real
+        # problem and must not be silently swallowed as "table absent".
+        raise

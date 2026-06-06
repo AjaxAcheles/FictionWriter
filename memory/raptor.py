@@ -87,7 +87,7 @@ def init_raptor_tree(db_path: Path) -> dict:
         dict: In-memory tree representation keyed by node ID. Each value is a dict
             with: id, parent_id, level, summary, updated_at.
     """
-    pass
+    return {}
 
 
 def write_raptor_node(
@@ -146,4 +146,4 @@ def get_raptor_summaries(
         dict: Summaries keyed by level (e.g., {'chapter': '...', 'arc': '...'}).
             Missing levels have empty string values.
     """
-    pass
+    return {}

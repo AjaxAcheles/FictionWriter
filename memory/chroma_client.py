@@ -127,4 +127,4 @@ def query_flavor_vectors(
             text (str), metadata (dict with scene_id/chapter_id/arc_id),
             distance (float, 0–1 cosine distance).
     """
-    pass
+    return []
