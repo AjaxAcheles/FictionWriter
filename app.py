@@ -21,47 +21,51 @@ Usage:
     uv run app.py
 """
 
+from pathlib import Path
+
 from quart import Quart
 
 from core.config_loader import load_config
+from core.logger import configure_log_level
 from core.runtime import init_resources
 from routes.dashboard import dashboard_bp
-from routes.alignment import alignment_bp
-from routes.settings import settings_bp
 from routes.control import control_bp
-from routes.codex import codex_bp
 
 
-def create_app() -> Quart:
+def create_app(config_path: Path = Path("config.yaml")) -> Quart:
     """
     Application factory.
 
     Purpose:
         Constructs and configures the Quart application instance. Loads AppConfig,
-        initializes all memory stores, and registers all route blueprints.
+        configures logging, registers Sprint-1-ready blueprints, and schedules
+        async resource initialization via before_serving.
 
     Inputs:
-        None — reads config.yaml and .env from the working directory.
+        config_path: Path to config.yaml. Defaults to config.yaml in the working
+            directory. Overridable in tests to point at a fixture config.
 
     Outputs:
         A fully configured Quart application instance ready to serve requests.
 
     Notes:
-        init_resources() is called synchronously here during factory construction.
-        It is also reachable at runtime via POST /control/reset for a clean slate
-        without restarting the server process.
+        init_resources() runs inside before_serving (not here) so it executes
+        within the event loop — required once init_resources uses aiosqlite.
+        Additional blueprints (alignment, settings, codex) are registered in
+        Sprint 4 when their route handlers are implemented.
     """
     app = Quart(__name__)
 
-    app.config["APP_CONFIG"] = load_config()
-
-    init_resources(app.config["APP_CONFIG"])
+    config = load_config(config_path)
+    configure_log_level(config.log_level)
+    app.config["APP_CONFIG"] = config
 
     app.register_blueprint(dashboard_bp)
-    app.register_blueprint(alignment_bp)
-    app.register_blueprint(settings_bp)
     app.register_blueprint(control_bp)
-    app.register_blueprint(codex_bp)
+
+    @app.before_serving
+    async def startup() -> None:
+        await init_resources(app.config["APP_CONFIG"])
 
     return app
 

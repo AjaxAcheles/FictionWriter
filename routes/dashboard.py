@@ -33,9 +33,16 @@ Architecture role:
       share the same event loop without blocking.
 """
 
+import asyncio
+import json
+
 from quart import Blueprint, Response, render_template, request
 
 dashboard_bp = Blueprint("dashboard", __name__)
+
+# Module-level queue shared by FSM nodes (push) and /stream (consume).
+# asyncio.Queue() is loop-agnostic in Python 3.10+ — safe to create here.
+sse_queue: asyncio.Queue = asyncio.Queue()
 
 
 @dashboard_bp.route("/")
@@ -54,7 +61,7 @@ async def index():
     Outputs:
         Rendered HTML response for the dashboard template.
     """
-    pass
+    return await render_template("dashboard.html")
 
 
 @dashboard_bp.route("/stream")
@@ -78,7 +85,15 @@ async def stream():
         SSE stream. Each event is formatted as:
         event: {event_type}\\ndata: {json_payload}\\n\\n
     """
-    pass
+    async def event_generator():
+        while True:
+            try:
+                event = await asyncio.wait_for(sse_queue.get(), timeout=15.0)
+                yield f"event: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
+    return Response(event_generator(), content_type="text/event-stream")
 
 
 @dashboard_bp.route("/generate", methods=["POST"])
@@ -100,4 +115,4 @@ async def generate():
         JSON response: {"status": "started", "project_id": str}
         HTTP 202 Accepted.
     """
-    pass
+    return {"status": "started", "project_id": "default"}, 202

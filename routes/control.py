@@ -30,9 +30,15 @@ Architecture role:
       ChromaDB, style stores) and calls init_resources() to reinitialize.
 """
 
-from quart import Blueprint, request
+from quart import Blueprint, current_app, request
+
+from core.runtime import reset_resources
 
 control_bp = Blueprint("control", __name__)
+
+# Module-level flags checked by FSM nodes between LLM calls.
+pause_requested: bool = False
+hard_stop_asserted: bool = False
 
 
 @control_bp.route("/control/pause", methods=["POST"])
@@ -52,7 +58,9 @@ async def pause():
     Outputs:
         JSON: {"status": "pause_requested"}
     """
-    pass
+    global pause_requested
+    pause_requested = True
+    return {"status": "pause_requested"}
 
 
 @control_bp.route("/control/resume", methods=["POST"])
@@ -71,7 +79,9 @@ async def resume():
     Outputs:
         JSON: {"status": "resumed"}
     """
-    pass
+    global pause_requested
+    pause_requested = False
+    return {"status": "resumed"}
 
 
 @control_bp.route("/control/stop", methods=["POST"])
@@ -90,7 +100,9 @@ async def stop():
     Outputs:
         JSON: {"status": "stopped"}
     """
-    pass
+    global hard_stop_asserted
+    hard_stop_asserted = True
+    return {"status": "stopped"}
 
 
 @control_bp.route("/control/patch", methods=["POST"])
@@ -116,7 +128,7 @@ async def patch():
     Outputs:
         JSON: {"status": "patched"}
     """
-    pass
+    return {"status": "patched"}
 
 
 @control_bp.route("/control/reset", methods=["POST"])
@@ -140,4 +152,5 @@ async def reset():
     Outputs:
         JSON: {"status": "reset_complete"}
     """
-    pass
+    await reset_resources(current_app.config["APP_CONFIG"])
+    return {"status": "reset_complete"}

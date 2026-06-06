@@ -107,7 +107,7 @@ async def upsert_temporal_edge(
 async def query_point_in_time_subgraph(
     entity_ids: list[str],
     active_event_id: str,
-    max_hops: int = 2,
+    max_hops: int = 2, # put hardcoded values into config.
 ) -> list[dict]:
     """
     Return temporal edges within the valid window of the given event ID.

@@ -28,11 +28,15 @@ Architecture role:
       store-specific logic.
 """
 
+import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from core.config_loader import AppConfig
+from core.config_loader import AppConfig
+from memory.chroma_client import init_chroma_collections, reset_collections
+from memory.graphiti_client import init_graphiti_client
+from memory.raptor import init_raptor_tree
+from memory.sqlite_db import init_db
+from memory.style_store import init_style_store
 
 
 DATA_DIR = Path("data")
@@ -44,7 +48,7 @@ GRAPHITI_PATH = DATA_DIR / "graphiti.db"
 EVENT_LOG_PATH = DATA_DIR / "event_log.jsonl"
 
 
-def init_resources(config: "AppConfig") -> None:
+async def init_resources(config: AppConfig) -> None:
     """
     Initialize all persistent memory stores from scratch.
 
@@ -74,10 +78,20 @@ def init_resources(config: "AppConfig") -> None:
         store fails to initialize, the exception surfaces immediately and the
         server does not start.
     """
-    pass
+    for directory in (DATA_DIR, LOGS_DIR, SNAPSHOTS_DIR, STYLES_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    init_db(SQLITE_PATH)
+    await init_graphiti_client(GRAPHITI_PATH)
+    init_chroma_collections(DATA_DIR)
+    init_raptor_tree(SQLITE_PATH)
+    init_style_store(STYLES_DIR)
+
+    # Event log has no init function — ensure the file exists without truncating.
+    EVENT_LOG_PATH.touch(exist_ok=True)
 
 
-def reset_resources(config: "AppConfig") -> None:
+async def reset_resources(config: AppConfig) -> None:
     """
     Wipe all runtime data stores and reinitialize from scratch.
 
@@ -108,4 +122,19 @@ def reset_resources(config: "AppConfig") -> None:
         and style profiles. Disable or access-control this endpoint before any
         production deployment.
     """
-    pass
+    SQLITE_PATH.unlink(missing_ok=True)
+
+    if GRAPHITI_PATH.exists():
+        shutil.rmtree(GRAPHITI_PATH)
+
+    for snapshot in SNAPSHOTS_DIR.glob("*.zip"):
+        snapshot.unlink()
+
+    EVENT_LOG_PATH.unlink(missing_ok=True)
+
+    reset_collections(DATA_DIR)
+
+    for style_file in STYLES_DIR.glob("*.json"):
+        style_file.unlink()
+
+    await init_resources(config)

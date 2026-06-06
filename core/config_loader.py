@@ -24,6 +24,8 @@ Architecture role:
       for all numeric thresholds and endpoint routing throughout the application.
 """
 
+import logging
+import sqlite3
 from pathlib import Path
 from typing import Optional
 
@@ -239,4 +241,41 @@ def load_config(config_path: Path = Path("config.yaml")) -> AppConfig:
         pydantic.ValidationError: If any key is unknown or any value fails type
             validation. The error message includes the exact offending field path.
     """
-    pass
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with config_path.open("r") as f:
+        raw = yaml.safe_load(f)
+
+    config = AppConfig(**raw)
+
+    db_path = Path("data/fictionwriter.db")
+    if db_path.exists():
+        _scan_commit_intents_at_startup(db_path)
+
+    return config
+
+
+def _scan_commit_intents_at_startup(db_path: Path) -> None:
+    # Uses stdlib sqlite3 (not aiosqlite) because load_config() is called before
+    # the async event loop starts — no async context is available yet.
+    logger = logging.getLogger(__name__)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT intent_id, beat_id, created_at FROM CommitIntent WHERE status='pending'"
+            ).fetchall()
+        if rows:
+            logger.warning(
+                "CommitIntent startup scan: %d pending row(s) detected — "
+                "prior crash suspected. Replay required before FSM resumes. "
+                "intent_ids=%s",
+                len(rows),
+                [r[0] for r in rows],
+            )
+        else:
+            logger.debug("CommitIntent startup scan: clean (no pending rows).")
+    except sqlite3.OperationalError:
+        # CommitIntent table not yet created (schema not initialized).
+        logger.debug("CommitIntent startup scan: table absent, skipping.")

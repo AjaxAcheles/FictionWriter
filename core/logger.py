@@ -29,9 +29,41 @@ Architecture role:
 
 import json
 import logging
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+
+_LOG_DIR = Path("logs")
+_log_level: int = logging.DEBUG
+_JSON_FORMATTER = logging.Formatter("%(message)s")
+
+
+def configure_log_level(level_str: str) -> None:
+    """Apply AppConfig.log_level to all loggers created by this module."""
+    global _log_level
+    _log_level = getattr(logging, level_str.upper(), logging.DEBUG)
+    for name in ("llm_io",):
+        existing = logging.getLogger(name)
+        if existing.handlers:
+            existing.setLevel(_log_level)
+
+
+def _make_rotating_logger(name: str, filename: str, max_bytes: int, backup_count: int) -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            _LOG_DIR / filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+        handler.setFormatter(_JSON_FORMATTER)
+        logger.addHandler(handler)
+        logger.setLevel(_log_level)
+        logger.propagate = False
+    return logger
 
 
 def get_logger(node_name: str) -> logging.Logger:
@@ -56,7 +88,12 @@ def get_logger(node_name: str) -> logging.Logger:
         logging.Logger: A configured Logger instance. Callers pass this to
             log_node_event() to emit structured entries.
     """
-    pass
+    return _make_rotating_logger(
+        name=node_name,
+        filename="fsm.log",
+        max_bytes=10 * 1024 * 1024,
+        backup_count=5,
+    )
 
 
 def log_node_event(
@@ -87,7 +124,15 @@ def log_node_event(
     Outputs:
         None. Writes one line to logs/fsm.log.
     """
-    pass
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "node": logger.name,
+        "fsm_pointer": fsm_pointer,
+        "duration_ms": duration_ms,
+        "outcome": outcome,
+        "error": error,
+    }
+    logger.info(json.dumps(entry))
 
 
 def get_llm_io_logger() -> logging.Logger:
@@ -110,7 +155,12 @@ def get_llm_io_logger() -> logging.Logger:
         logging.Logger: A configured Logger instance. Callers pass this to
             log_llm_call() after each inference request completes.
     """
-    pass
+    return _make_rotating_logger(
+        name="llm_io",
+        filename="llm_io.log",
+        max_bytes=50 * 1024 * 1024,
+        backup_count=3,
+    )
 
 
 def log_llm_call(
@@ -140,4 +190,10 @@ def log_llm_call(
     Outputs:
         None. Writes one line to logs/llm_io.log.
     """
-    pass
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "duration_ms": duration_ms,
+        "request": request_payload,
+        "response_text": response_text,
+    }
+    logger.info(json.dumps(entry))
