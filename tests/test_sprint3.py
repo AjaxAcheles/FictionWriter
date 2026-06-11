@@ -561,6 +561,19 @@ async def test_full_vertical_slice_smoke(env, monkeypatch):
     beat_words = len(ACTIVE_PROSE.split())
 
     async def fake_structured(endpoint, messages, schema_model, retry_cap, **kwargs):
+        # Sprint 4 made the upper planners LLM-backed — dispatch by schema.
+        if schema_model.__name__ == "GlobalPlan":
+            return schema_model.model_validate(
+                {"arcs": [{"id": "arc_001", "title": "Arc", "description": ""}], "threads": []}
+            )
+        if schema_model.__name__ == "ArcPlan":
+            return schema_model.model_validate(
+                {"chapter_stubs": [{"id": "ch_001", "description": "Ch"}], "thread_events": []}
+            )
+        if schema_model.__name__ == "ChapterPlan":
+            return schema_model.model_validate(
+                {"scenes": [{"id": "sc_001", "description": "Harbor.", "word_budget": 100, "ordering": 0}]}
+            )
         return schema_model.model_validate(
             {
                 "beats": [
