@@ -1,0 +1,41 @@
+# docker-compose.yml
+#
+# FalkorDB graph database backend for FictionWriter (Graphiti temporal knowledge graph).
+# Uses the official server-only image (no Browser UI overhead). Runs in WSL2/Linux Docker.
+#
+#   docker compose up -d          # start the graph backend
+#   docker compose down           # stop (data persists in the named volume)
+#   docker compose down -v        # stop AND wipe graph data
+#
+# The app connects via config.yaml -> graphiti: {host, port}. If the container is
+# not running, FictionWriter boots anyway and degrades to the no-op graph path
+# (memory/graphiti_client.py logs a WARNING).
+
+services:
+  falkordb:
+    image: falkordb/falkordb-server:latest
+    container_name: falkordb-server
+    ports:
+      - "6379:6379"
+    environment:
+      # REDIS_ARGS handles core database memory and persistence.
+      # appendonly + everysec: durable AOF persistence with at most 1s of loss on crash.
+      # noeviction: graph data is never silently dropped under memory pressure —
+      # writes fail loudly instead, which the FSM's commit path surfaces as a hard error.
+      - REDIS_ARGS=--appendonly yes --appendfsync everysec --maxmemory 4gb --maxmemory-policy noeviction
+      # FALKORDB_ARGS handles graph-specific thread and query limits.
+      # TIMEOUT_MAX 30000 (ms) bounds any runaway Cypher query well below the
+      # FSM's 300s LLM timeout so a stuck graph query can never stall a beat commit.
+      - FALKORDB_ARGS=THREAD_COUNT 4 TIMEOUT_MAX 30000
+    volumes:
+      - falkordb_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  falkordb_data:

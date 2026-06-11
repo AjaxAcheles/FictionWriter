@@ -32,6 +32,11 @@ generation:
   craft_consultant_threshold: 3     # edge_mode_selector routes to node_craft_consultant when retry_count > this value (and <= retry_count_max).
   replan_count_max: 2               # node_freeze_and_escalate routes to node_plan_chapter when replan_count > this value (instead of node_plan_beat).
 
+graphiti:                            # FalkorDB server connection (docker compose up -d). Section optional — these are the defaults.
+  host: "localhost"                 # FalkorDB host. "localhost" reaches the docker-compose port mapping from WSL/Linux.
+  port: 6379                        # FalkorDB port (compose maps 6379:6379).
+  database: "fictionwriter"         # Graph name within the multi-tenant server.
+
 ingestion:
   sliding_window_tokens: 2000       # Token window size for the non-blocking ingestion pipeline sliding-window chunker.
 

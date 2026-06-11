@@ -1,8 +1,10 @@
 # pyproject.toml
 #
 # UV package manager manifest for the FictionWriter multi-agent LLM orchestration system.
-# Enforces Python 3.12+ (required by falkordblite for Unix domain socket support).
+# Enforces Python 3.12+. The Graphiti temporal graph runs against a dockerized
+# FalkorDB server (docker-compose.yml) via graphiti-core[falkordb].
 # Install all runtime dependencies with: uv sync
+# Start the graph backend with: docker compose up -d
 # Run the server with: uv run app.py
 #
 # Optional [hf-tokenizer] extra installs transformers.AutoTokenizer — only needed
@@ -22,8 +24,7 @@ dependencies = [
     "pyyaml",
     "chromadb",
     "tiktoken",
-    "graphiti-core",
-    "falkordblite",
+    "graphiti-core[falkordb]",
     "numpy",
     "httpx",
     "typing-extensions",
@@ -39,7 +40,3 @@ python_files = ["test_*.py"]
 asyncio_mode = "auto"
 
 [dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.0",
-]

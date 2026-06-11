@@ -34,10 +34,13 @@ Architecture role:
     - Initialized by core/runtime.py via init_graphiti_client() on startup and reset.
     - Queried by node_assemble_context for temporal entity facts and coreference links.
     - Written by node_commit_transaction (idempotent upsert keyed by deterministic UUID).
-    - Snapshotted by node_commit_transaction at chapter boundaries (file-copy operation).
+    - Snapshotted at chapter boundaries via a Redis BGSAVE/SAVE against the
+      FalkorDB server (docker-compose.yml); legacy file-copy guards remain for
+      pre-server data directories.
     - Restored by memory/branch_manager.py for branch operations and crash recovery.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 from uuid import uuid5, NAMESPACE_OID
@@ -45,29 +48,91 @@ from uuid import uuid5, NAMESPACE_OID
 _graphiti_client = None
 
 
-async def init_graphiti_client(graphiti_path: Path):
+async def init_graphiti_client(config=None):
     """
-    Initialize the Graphiti client with FalkorDB Lite backend.
+    Initialize the Graphiti client against the local FalkorDB server.
 
     Purpose:
-        Creates the Graphiti instance backed by FalkorLiteDriver pointing to
-        data/graphiti.db. Calls build_indices_and_constraints() to set up the
-        graph schema. Called by core/runtime.py on startup and after reset.
+        Connects graphiti-core's FalkorDriver to the FalkorDB instance started by
+        docker-compose.yml (service: falkordb, default localhost:6379) and calls
+        build_indices_and_constraints() to set up the graph schema. Called by
+        core/runtime.py on startup and after reset.
+
+        Graceful degradation: if the FalkorDB server is unreachable (container
+        not running, e.g. unit tests or a dev box without Docker), a WARNING is
+        logged and the module continues with no client — upsert_temporal_edge()
+        falls through to the no-op _apply_event() chain and
+        query_point_in_time_subgraph() returns []. The FSM never blocks on the
+        graph backend being up.
 
     Inputs:
-        graphiti_path: Path — path to the FalkorDB Lite data directory
-            (e.g., Path("data/graphiti.db")).
+        config: AppConfig | None — connection parameters are read from
+            config.graphiti (host, port, username, password, database).
+            None falls back to localhost:6379 / "fictionwriter".
 
     Outputs:
-        The initialized Graphiti client instance. Stored as a module-level singleton
-        for use by other functions in this module.
+        The initialized Graphiti client instance (module-level singleton),
+        or None when the server is unreachable.
     """
     global _graphiti_client
-    from graphiti_core import Graphiti
-    from falkordblite import FalkorLiteDriver
 
-    _graphiti_client = Graphiti(graph_driver=FalkorLiteDriver(path=str(graphiti_path)))
-    await _graphiti_client.build_indices_and_constraints()
+    graphiti_cfg = getattr(config, "graphiti", None)
+    host = getattr(graphiti_cfg, "host", "localhost")
+    port = getattr(graphiti_cfg, "port", 6379)
+    username = getattr(graphiti_cfg, "username", None)
+    password = getattr(graphiti_cfg, "password", None)
+    database = getattr(graphiti_cfg, "database", "fictionwriter")
+
+    try:
+        # Reachability + protocol probe BEFORE constructing the driver: the
+        # redis client blocks the event loop during connect retries, so failures
+        # must be caught here with a hard 2s bound. A RESP PING is sent and
+        # "+PONG" is required — a port that merely accepts TCP (or a non-Redis
+        # service) degrades cleanly instead of hanging the boot path.
+        import socket
+
+        with socket.create_connection((host, port), timeout=2.0) as probe:
+            probe.settimeout(2.0)
+            probe.sendall(b"*1\r\n$4\r\nPING\r\n")
+            response = probe.recv(64)
+        if not response.startswith(b"+PONG"):
+            raise OSError(f"unexpected PING response: {response[:32]!r}")
+    except OSError as e:
+        logging.getLogger(__name__).warning(
+            "FalkorDB server unreachable at %s:%s (%r) — graph features degraded "
+            "to no-op. Start it with: docker compose up -d", host, port, e,
+        )
+        _graphiti_client = None
+        return None
+
+    try:
+        from graphiti_core import Graphiti
+        from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+        driver = FalkorDriver(
+            host=host, port=port, username=username, password=password, database=database
+        )
+        client = Graphiti(graph_driver=driver)
+        await client.build_indices_and_constraints()
+    except Exception as e:  # noqa: BLE001 — anything answering 6379 that is not a
+        # working FalkorDB (e.g. a plain Redis without the graph module) lands here.
+        logging.getLogger(__name__).warning(
+            "FalkorDB handshake at %s:%s failed (%r) — graph features degraded to "
+            "no-op. Is the falkordb-server container healthy? (docker compose ps)",
+            host, port, e,
+        )
+        _graphiti_client = None
+        return None
+
+    _graphiti_client = client
+    logging.getLogger(__name__).info(
+        "Graphiti connected to FalkorDB at %s:%s (database=%s).", host, port, database
+    )
+    return _graphiti_client
+
+
+def get_graphiti_client():
+    """The module-level Graphiti singleton, or None when degraded/uninitialized."""
     return _graphiti_client
 
 

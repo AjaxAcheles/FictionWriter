@@ -20,5 +20,4 @@ Purpose:
     chroma_client.py  — HNSW vector index (ChromaDB). Approximate nearest neighbor.
                          Injection: Prose Drafter (associative flavor only).
     branch_manager.py — Not a store itself. Orchestrates O(1) snapshot decompression
-                         for branching and .jsonl replay for crash recovery.
-"""
+                         for branching and .jsonl replay for cras

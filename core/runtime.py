@@ -44,6 +44,9 @@ LOGS_DIR = Path("logs")
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 STYLES_DIR = DATA_DIR / "styles"
 SQLITE_PATH = DATA_DIR / "fictionwriter.db"
+# Legacy FalkorDB Lite data file. The graph now lives in the FalkorDB server
+# container (docker-compose.yml); this path remains only so pre-server data
+# directories and old snapshot ZIPs stay restorable/cleanable.
 GRAPHITI_PATH = DATA_DIR / "graphiti.db"
 EVENT_LOG_PATH = DATA_DIR / "event_log.jsonl"
 EXPORTS_DIR = DATA_DIR / "exports"
@@ -83,7 +86,7 @@ async def init_resources(config: AppConfig) -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
     init_db(SQLITE_PATH)
-    await init_graphiti_client(GRAPHITI_PATH)
+    await init_graphiti_client(config)
     init_chroma_collections(DATA_DIR)
     init_raptor_tree(SQLITE_PATH)
     init_style_store(STYLES_DIR)
@@ -143,4 +146,4 @@ async def reset_resources(config: AppConfig) -> None:
     for style_file in STYLES_DIR.glob("*.json"):
         style_file.unlink()
 
-    await init_resources(config)
+    await init_resou

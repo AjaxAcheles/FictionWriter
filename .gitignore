@@ -235,3 +235,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- FictionWriter runtime data & Docker ---
+# FalkorDB persists inside the named Docker volume (falkordb_data);
+# these guard against accidental bind-mount or legacy data directories.
+data/falkordb/
+falkordb_data/
+data/graphiti.db
+docker-compose.override.yml

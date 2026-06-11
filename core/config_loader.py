@@ -178,6 +178,32 @@ class IngestionConfig(BaseModel):
     sliding_window_tokens: int = 2000
 
 
+class GraphitiConfig(BaseModel):
+    """
+    FalkorDB server connection parameters for the Graphiti temporal graph.
+
+    Purpose:
+        Points graphiti-core's FalkorDriver at the FalkorDB instance started by
+        docker-compose.yml (service: falkordb). All fields default to the local
+        single-container deployment, so the section may be omitted entirely.
+
+    Fields:
+        host: FalkorDB server host (default "localhost").
+        port: FalkorDB server port (default 6379).
+        username: Optional auth username (default None — local dev needs none).
+        password: Optional auth password (default None).
+        database: Graph database name within the multi-tenant server.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = "localhost"
+    port: int = 6379
+    username: Optional[str] = None
+    password: Optional[str] = None
+    database: str = "fictionwriter"
+
+
 class ProjectConfig(BaseModel):
     """
     Project-level manuscript parameters.
@@ -231,6 +257,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     project: ProjectConfig
+    graphiti: GraphitiConfig = GraphitiConfig()
     log_level: str = "DEBUG"
     model_validate_retry_cap: int = 3
     headless_mode: bool = False
@@ -307,6 +334,9 @@ def _scan_commit_intents_at_startup(db_path: Path) -> None:
             # CommitIntent table not yet created (schema not initialized).
             logger.debug("CommitIntent startup scan: table absent, skipping.")
             return
-        # Any other operational error (locked/corrupt DB, disk I/O) is a real
-        # problem and must not be silently swallowed as "table absent".
-        raise
+        # The scan is ADVISORY — it only logs pending intents for the recovery
+        # path. load_config() is re-read at every beat boundary, so a transient
+        # lock (WAL contention with the running server) or an unopenable file
+        # must not crash config loading. Surface it loudly and move on; the FSM
+        # recovery path re-checks CommitIntent itself before resuming.
+        logger.warning("CommitIntent startup scan failed (%r) — continuing without scan.", e)

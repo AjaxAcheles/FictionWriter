@@ -53,7 +53,7 @@ from fsm.nodes.node_compress_memory import node_compress_memory
 logger = get_logger("node_commit_transaction")
 
 
-def snapshot_databases(snapshot_dir: Path, sqlite_path: Path, graphiti_path: Path, label: str) -> Path:
+async def snapshot_databases(snapshot_dir: Path, sqlite_path: Path, graphiti_path: Path, label: str) -> Path:
     """
     Chapter-boundary snapshot ZIP — the O(1) branch restore payload.
 
@@ -76,12 +76,20 @@ def snapshot_databases(snapshot_dir: Path, sqlite_path: Path, graphiti_path: Pat
         src.close()
 
     try:
+        # Flush the FalkorDB server's in-memory state to its AOF/RDB before the
+        # snapshot is stamped. With the dockerized server (docker-compose.yml)
+        # durability lives in the falkordb_data volume, so this is a best-effort
+        # consistency point, not a file copied into the ZIP.
         from memory import graphiti_client
         client = getattr(graphiti_client, "_graphiti_client", None)
         if client is not None:
-            redis_conn = getattr(getattr(client, "graph_driver", None), "redis", None)
+            driver = getattr(client, "driver", None) or getattr(client, "graph_driver", None)
+            falkor = getattr(driver, "client", None)
+            redis_conn = getattr(falkor, "connection", None) or getattr(falkor, "redis", None)
             if redis_conn is not None:
-                redis_conn.save()  # synchronous flush before file copy
+                result = redis_conn.bgsave() if hasattr(redis_conn, "bgsave") else redis_conn.save()
+                if hasattr(result, "__await__"):
+                    await result
     except Exception as e:  # pragma: no cover — driver-internal best effort
         logger.warning("graphiti SAVE before snapshot failed: %r", e)
 
@@ -209,7 +217,7 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
             if not sqlite_db.get_remaining_scenes(db, pointer.chapter_id):
                 sqlite_db.set_chapter_status(db, pointer.chapter_id, "completed")
                 _promote_epistemic_beliefs(db, pointer.chapter_id)
-                snapshot_databases(
+                await snapshot_databases(
                     runtime.SNAPSHOTS_DIR, db, runtime.GRAPHITI_PATH, pointer.chapter_id
                 )
                 await node_compress_memory(state)  # synchronous blocking consolidation

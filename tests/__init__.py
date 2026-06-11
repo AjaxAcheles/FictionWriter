@@ -16,5 +16,4 @@ Purpose:
 
     All tests use pytest-asyncio for async test functions (LangGraph nodes are async).
     No mocking of SQLite or Graphiti — tests use real in-memory or temp-file stores
-    to prevent mock/prod divergence.
-"""
+    to prevent mock
