@@ -46,6 +46,7 @@ STYLES_DIR = DATA_DIR / "styles"
 SQLITE_PATH = DATA_DIR / "fictionwriter.db"
 GRAPHITI_PATH = DATA_DIR / "graphiti.db"
 EVENT_LOG_PATH = DATA_DIR / "event_log.jsonl"
+EXPORTS_DIR = DATA_DIR / "exports"
 
 
 async def init_resources(config: AppConfig) -> None:
@@ -78,7 +79,7 @@ async def init_resources(config: AppConfig) -> None:
         store fails to initialize, the exception surfaces immediately and the
         server does not start.
     """
-    for directory in (DATA_DIR, LOGS_DIR, SNAPSHOTS_DIR, STYLES_DIR):
+    for directory in (DATA_DIR, LOGS_DIR, SNAPSHOTS_DIR, STYLES_DIR, EXPORTS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
     init_db(SQLITE_PATH)

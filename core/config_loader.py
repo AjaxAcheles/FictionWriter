@@ -188,6 +188,9 @@ class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     word_count_target: int = 300000
+    # Sprint 4 additive fields (defaults keep config.yaml parsing under extra='forbid').
+    genre: str = ""
+    premise: str = ""
 
 
 class AppConfig(BaseModel):

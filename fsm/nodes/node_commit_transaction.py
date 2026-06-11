@@ -109,14 +109,16 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
     config = load_config()
     db = runtime.SQLITE_PATH
     draft = state["current_draft_text"]
-    beat_id = f"{pointer.scene_id}_beat_{pointer.beat_index}"
+    # Use the Beat row's actual beat_id when present — Tier 3 subdivisions create
+    # rows whose IDs are not derivable from (scene_id, beat_index) alone.
+    beat = sqlite_db.get_beat_by_index(db, pointer.scene_id, pointer.beat_index)
+    beat_id = (beat or {}).get("beat_id") or f"{pointer.scene_id}_beat_{pointer.beat_index}"
 
     try:
         # 1. intent record (pending)
         intent_id = sqlite_db.create_commit_intent(db, beat_id)
 
         # 2. SQLite idempotent writes
-        beat = sqlite_db.get_beat_by_index(db, pointer.scene_id, pointer.beat_index)
         plan = json.loads((beat or {}).get("beat_plan_json") or "{}")
         word_count = len(draft.split())
         already_committed = beat is not None and beat.get("status") == "committed"

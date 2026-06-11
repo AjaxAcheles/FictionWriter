@@ -1,51 +1,133 @@
 """
 fsm/nodes/node_plan_global.py
 
-Level 1 Planning Node — Global Story Planner. SPRINT 3 SEEDING STUB.
+Level 1 Planning Node — Global Story Planner (full Sprint 4 implementation).
 
-Purpose (full version — Sprint 4):
-    Generates the master timeline and thematic boundaries for the entire book
-    via the planner endpoint, runs the Density Model for word count estimation,
-    and accepts existing_arcs for continuation-arc generation.
+Purpose:
+    Generates the master timeline and thematic boundaries for the entire book.
+    Runs the Density Model (planner-endpoint estimation of word allocation by
+    subplot complexity) and writes top-level Arc rows plus tracked subplot
+    Thread rows to SQLite. Accepts existing arcs so edge_commit_router can
+    request a continuation arc when all arcs are exhausted below the word target.
 
-Sprint 3 behavior:
-    Seeds a single default Arc row when none exists (idempotent INSERT OR
-    IGNORE) and points fsm_pointer.arc_id at the first arc. This unblocks the
-    vertical slice's plan_beat → commit loop without LLM planning calls.
+Architecture role:
+    - Triggered once at START, or by edge_commit_router for continuation arcs.
+    - Yields to node_plan_arc. Prompt: prompts/node_plan_global.xml.j2.
 """
 
+import json
 import time
 from datetime import datetime, timezone
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict
 
 from core import runtime
+from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
+from llm import call_llm as call_llm_module
 from memory import sqlite_db
+from prompts.prompt_loader import PromptLoader
 
 logger = get_logger("node_plan_global")
 
-DEFAULT_ARC_ID = "arc_001"
+
+class PlannedArc(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    title: str
+    description: str = ""
+    word_allocation: int = 0
+    chapter_count_range: Optional[str] = None
+
+
+class PlannedThread(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    name: str
+    description: str = ""
+    priority: float = 0.5
+
+
+class GlobalPlan(BaseModel):
+    """Planner output: {'arcs': [...], 'threads': [...]}."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    arcs: List[PlannedArc]
+    threads: List[PlannedThread] = []
 
 
 async def node_plan_global(state: OrchestratorState) -> dict:
-    """Seed the default arc and set fsm_pointer.arc_id (Sprint 3 stub)."""
+    """
+    Plan (or extend) the master arc timeline and subplot thread set.
+
+    Outputs (merged into OrchestratorState):
+        fsm_pointer: arc_id set to the first incomplete arc.
+    """
     start = time.monotonic()
     pointer = state["fsm_pointer"]
+    config = load_config()
     db = runtime.SQLITE_PATH
+
     try:
-        sqlite_db.insert_row(
-            db,
-            "Arcs",
+        from contextlib import closing
+        with closing(sqlite_db.get_connection(db)) as conn:
+            existing = [dict(r) for r in conn.execute("SELECT * FROM Arcs ORDER BY created_at ASC")]
+
+        prompt = PromptLoader().load_and_render(
+            "node_plan_global.xml.j2",
             {
-                "arc_id": DEFAULT_ARC_ID,
-                "title": "Arc One",
-                "summary": "Vertical-slice seed arc (replaced by Sprint 4 global planning).",
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "genre": config.project.genre,
+                "premise": config.project.premise,
+                "word_count_target": config.project.word_count_target,
+                "world_rules": "",  # populated by the Sprint 5 ingestion pipeline
+                "existing_arcs": json.dumps(
+                    [{"arc_id": a["arc_id"], "title": a["title"], "summary": a["summary"]} for a in existing]
+                ),
+                "density_envelope": json.dumps(
+                    {"word_count_target": config.project.word_count_target,
+                     "existing_word_count": sqlite_db.get_total_word_count(db)}
+                ),
             },
         )
-        updated = pointer.model_copy(update={"arc_id": DEFAULT_ARC_ID})
+        plan = await call_llm_module.call_llm_structured(
+            config.endpoints.planner,
+            [{"role": "user", "content": prompt}],
+            GlobalPlan,
+            retry_cap=config.model_validate_retry_cap,
+        )
+
+        now = datetime.now(timezone.utc).isoformat()
+        first_arc_id = None
+        for arc in plan.arcs:
+            sqlite_db.insert_row(
+                db, "Arcs",
+                {"arc_id": arc.id, "title": arc.title, "summary": arc.description, "created_at": now},
+            )
+            if first_arc_id is None and not _arc_completed(db, arc.id):
+                first_arc_id = arc.id
+        for thread in plan.threads:
+            sqlite_db.insert_row(
+                db, "Threads",
+                {"thread_id": thread.id, "name": thread.name, "description": thread.description,
+                 "priority": thread.priority, "status": "open"},
+            )
+
+        updated = pointer.model_copy(update={"arc_id": first_arc_id or pointer.arc_id})
         log_node_event(logger, updated.model_dump(), (time.monotonic() - start) * 1000.0, "success")
         return {"fsm_pointer": updated}
     except Exception as e:
         log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "failure", error=repr(e))
         raise
+
+
+def _arc_completed(db, arc_id: str) -> bool:
+    """An arc is complete when it has chapters and none remain open."""
+    from contextlib import closing
+    with closing(sqlite_db.get_connection(db)) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM Chapters WHERE arc_id = ?", (arc_id,)).fetchone()[0]
+    return total > 0 and not sqlite_db.get_remaining_chapters(db, arc_id)

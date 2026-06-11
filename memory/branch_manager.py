@@ -62,7 +62,39 @@ def create_chapter_snapshot(chapter_id: str, timestamp: str) -> Path:
     Outputs:
         Path: The absolute path to the created snapshot ZIP file.
     """
-    pass
+    import sqlite3
+
+    SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    safe_stamp = timestamp.replace(":", "").replace("-", "").replace(".", "")
+    zip_path = SNAPSHOTS_DIR / f"snapshot_{chapter_id}_{safe_stamp}.zip"
+
+    # WAL-safe SQLite copy via the backup API — never a raw file copy.
+    sqlite_copy = SNAPSHOTS_DIR / f"_tmp_{chapter_id}.db"
+    if SQLITE_PATH.exists():
+        try:
+            src_conn = sqlite3.connect(SQLITE_PATH)
+            try:
+                dst_conn = sqlite3.connect(sqlite_copy)
+                with dst_conn:
+                    src_conn.backup(dst_conn)
+                dst_conn.close()
+            finally:
+                src_conn.close()
+        except sqlite3.DatabaseError:
+            # Live DB unreadable by SQLite (corrupt mid-crash state). The safety
+            # archive must still capture the bytes — raw copy fallback.
+            sqlite_copy.write_bytes(SQLITE_PATH.read_bytes())
+    else:
+        sqlite_copy.write_bytes(b"")
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(sqlite_copy, "fictionwriter.db")
+        if GRAPHITI_PATH.exists() and GRAPHITI_PATH.is_file():
+            zf.write(GRAPHITI_PATH, "graphiti.db")
+        else:
+            zf.writestr("graphiti.db", b"")
+    sqlite_copy.unlink(missing_ok=True)
+    return zip_path.resolve()
 
 
 def restore_snapshot(
@@ -94,7 +126,26 @@ def restore_snapshot(
             {'branch_reason': str | None}. On success, the live database files have
             been replaced by the snapshot contents.
     """
-    pass
+    from datetime import datetime, timezone
+
+    snapshot_path = Path(snapshot_path)
+    if not zipfile.is_zipfile(snapshot_path):
+        raise ValueError(f"restore_snapshot: not a valid snapshot ZIP: {snapshot_path}")
+
+    # Safety: archive the CURRENT live branch before replacing anything.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    create_chapter_snapshot("prerestore", stamp)
+
+    with zipfile.ZipFile(snapshot_path, "r") as zf:
+        names = set(zf.namelist())
+        if "fictionwriter.db" in names:
+            SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SQLITE_PATH.write_bytes(zf.read("fictionwriter.db"))
+        if "graphiti.db" in names:
+            GRAPHITI_PATH.parent.mkdir(parents=True, exist_ok=True)
+            GRAPHITI_PATH.write_bytes(zf.read("graphiti.db"))
+
+    return {"branch_reason": branch_reason, "restored_from": str(snapshot_path)}
 
 
 def replay_events_after_snapshot(
@@ -126,7 +177,30 @@ def replay_events_after_snapshot(
         None. Side effect: applies replayed events to SQLite and Graphiti, bringing
         the databases to the state they were in just before the crash.
     """
-    pass
+    import json as _json
+
+    from memory.event_log import iter_events_after_checkpoint
+    from memory.graphiti_client import _apply_event
+    from memory.sqlite_db import upsert_beat
+
+    for event in iter_events_after_checkpoint(log_path, snapshot_beat_id):
+        if event.get("type") != "beat_commit":
+            continue
+        # Idempotent SQLite replay (status only — prose deltas already live in
+        # beat_plan_json written by the original commit's upsert).
+        if event.get("beat_id") and event.get("scene_id") is not None:
+            upsert_beat(
+                SQLITE_PATH,
+                {
+                    "beat_id": event["beat_id"],
+                    "scene_id": event["scene_id"],
+                    "beat_index": event.get("beat_index", 0),
+                    "beat_plan_json": _json.dumps({"replayed": True, **{k: event[k] for k in ("word_count",) if k in event}}),
+                    "status": "committed",
+                },
+            )
+        # Idempotent Graphiti replay (deterministic-UUID upsert chain).
+        _apply_event(event)
 
 
 def list_snapshots() -> list[dict]:
@@ -146,4 +220,22 @@ def list_snapshots() -> list[dict]:
             Each dict contains: filename (str), chapter_id (str), timestamp (str),
             size_bytes (int), path (str).
     """
-    pass
+    snapshots = []
+    if not SNAPSHOTS_DIR.exists():
+        return snapshots
+    for zip_path in SNAPSHOTS_DIR.glob("snapshot_*.zip"):
+        stem = zip_path.stem  # snapshot_{chapter_id}_{timestamp}
+        parts = stem.split("_")
+        timestamp = parts[-1] if len(parts) >= 3 else ""
+        chapter_id = "_".join(parts[1:-1]) if len(parts) >= 3 else stem
+        snapshots.append(
+            {
+                "filename": zip_path.name,
+                "chapter_id": chapter_id,
+                "timestamp": timestamp,
+                "size_bytes": zip_path.stat().st_size,
+                "path": str(zip_path.resolve()),
+            }
+        )
+    snapshots.sort(key=lambda s: s["timestamp"], reverse=True)
+    return snapshots

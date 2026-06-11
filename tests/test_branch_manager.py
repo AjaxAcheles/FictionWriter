@@ -26,8 +26,26 @@ from pathlib import Path
 
 import pytest
 
+from memory import branch_manager
 
-def test_create_snapshot_creates_zip(tmp_path):
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    """Point all branch_manager module paths into tmp_path and seed live DBs."""
+    monkeypatch.setattr(branch_manager, "SNAPSHOTS_DIR", tmp_path / "snapshots")
+    monkeypatch.setattr(branch_manager, "SQLITE_PATH", tmp_path / "fictionwriter.db")
+    monkeypatch.setattr(branch_manager, "GRAPHITI_PATH", tmp_path / "graphiti.db")
+    import sqlite3
+    conn = sqlite3.connect(tmp_path / "fictionwriter.db")
+    conn.execute("CREATE TABLE marker (v TEXT)")
+    conn.execute("INSERT INTO marker VALUES ('original')")
+    conn.commit(); conn.close()
+    (tmp_path / "graphiti.db").write_bytes(b"graphiti-original")
+    return branch_manager
+
+
+
+def test_create_snapshot_creates_zip(env, tmp_path):
     """
     Assert create_chapter_snapshot() creates a ZIP file in data/snapshots/.
 
@@ -41,10 +59,13 @@ def test_create_snapshot_creates_zip(tmp_path):
     Expected:
         The returned Path exists. zipfile.is_zipfile() returns True.
     """
-    pass
+    path = env.create_chapter_snapshot("ch_001", "2026-06-11T00:00:00Z")
+    assert path.exists()
+    assert zipfile.is_zipfile(path)
+    assert "ch_001" in path.name
 
 
-def test_snapshot_contains_both_db_files(tmp_path):
+def test_snapshot_contains_both_db_files(env, tmp_path):
     """
     Assert the snapshot ZIP contains entries for both fictionwriter.db and graphiti.db.
 
@@ -58,10 +79,13 @@ def test_snapshot_contains_both_db_files(tmp_path):
     Expected:
         ZIP namelist contains 'fictionwriter.db' and 'graphiti.db'.
     """
-    pass
+    path = env.create_chapter_snapshot("ch_002", "2026-06-11T01:00:00Z")
+    with zipfile.ZipFile(path) as zf:
+        names = set(zf.namelist())
+    assert {"fictionwriter.db", "graphiti.db"} <= names
 
 
-def test_restore_replaces_db_files(tmp_path):
+def test_restore_replaces_db_files(env, tmp_path):
     """
     Assert restore_snapshot() extracts and replaces the live DB files.
 
@@ -76,10 +100,22 @@ def test_restore_replaces_db_files(tmp_path):
     Expected:
         After restore, data/fictionwriter.db and data/graphiti.db match the snapshot contents.
     """
-    pass
+    import sqlite3
+
+    snapshot = env.create_chapter_snapshot("ch_003", "2026-06-11T02:00:00Z")
+    env.SQLITE_PATH.write_bytes(b"corrupted")
+    env.GRAPHITI_PATH.write_bytes(b"graphiti-modified")
+
+    env.restore_snapshot(snapshot)
+    # Semantic equality: the backup-API copy normalizes header bytes, so the
+    # restored DB is compared by content, not raw bytes.
+    conn = sqlite3.connect(env.SQLITE_PATH)
+    assert conn.execute("SELECT v FROM marker").fetchone()[0] == "original"
+    conn.close()
+    assert env.GRAPHITI_PATH.read_bytes() == b"graphiti-original"
 
 
-def test_restore_is_idempotent(tmp_path):
+def test_restore_is_idempotent(env, tmp_path):
     """
     Assert restoring the same snapshot twice produces the same result as once.
 
@@ -94,10 +130,18 @@ def test_restore_is_idempotent(tmp_path):
     Expected:
         File contents after two restores == file contents after one restore.
     """
-    pass
+    snapshot = env.create_chapter_snapshot("ch_004", "2026-06-11T03:00:00Z")
+    env.SQLITE_PATH.write_bytes(b"diverged")
+
+    env.restore_snapshot(snapshot)
+    once_sqlite = env.SQLITE_PATH.read_bytes()
+    once_graphiti = env.GRAPHITI_PATH.read_bytes()
+    env.restore_snapshot(snapshot)
+    assert env.SQLITE_PATH.read_bytes() == once_sqlite
+    assert env.GRAPHITI_PATH.read_bytes() == once_graphiti
 
 
-def test_list_snapshots_returns_metadata(tmp_path):
+def test_list_snapshots_returns_metadata(env, tmp_path):
     """
     Assert list_snapshots() returns correct metadata for all ZIPs in data/snapshots/.
 
@@ -113,10 +157,17 @@ def test_list_snapshots_returns_metadata(tmp_path):
         list_snapshots() returns a list of length 2. Each entry contains the correct
         chapter_id extracted from the filename.
     """
-    pass
+    env.create_chapter_snapshot("ch_a", "2026-06-11T04:00:00Z")
+    env.create_chapter_snapshot("ch_b", "2026-06-11T05:00:00Z")
+    snapshots = env.list_snapshots()
+    assert len(snapshots) == 2
+    assert {s["chapter_id"] for s in snapshots} == {"ch_a", "ch_b"}
+    assert snapshots[0]["timestamp"] >= snapshots[1]["timestamp"]  # newest first
+    for s in snapshots:
+        assert s["size_bytes"] > 0 and s["filename"].endswith(".zip")
 
 
-def test_restore_with_reason_includes_it_in_result(tmp_path):
+def test_restore_with_reason_includes_it_in_result(env, tmp_path):
     """
     Assert restore_snapshot(branch_reason="...") includes the reason in the returned dict.
 
@@ -131,4 +182,6 @@ def test_restore_with_reason_includes_it_in_result(tmp_path):
     Expected:
         result["branch_reason"] == "Test reason string"
     """
-    pass
+    snapshot = env.create_chapter_snapshot("ch_005", "2026-06-11T06:00:00Z")
+    result = env.restore_snapshot(snapshot, branch_reason="Test reason string")
+    assert result["branch_reason"] == "Test reason string"

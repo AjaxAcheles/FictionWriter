@@ -143,6 +143,8 @@ def compile_graph():
         freeze_router,
         {
             "node_revise_prose": "node_revise_prose",
+            "node_plan_beat": "node_plan_beat",
+            "node_plan_chapter": "node_plan_chapter",
             "node_human_intervention": "node_human_intervention",
         },
     )

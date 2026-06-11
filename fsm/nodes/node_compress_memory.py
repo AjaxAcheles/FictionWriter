@@ -25,7 +25,9 @@ Architecture role:
 import time
 
 from core import runtime
+from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
+from llm import call_llm as call_llm_module
 from fsm.state import OrchestratorState
 from memory import sqlite_db
 from memory.raptor import cluster_scenes, write_raptor_node_full
@@ -33,6 +35,37 @@ from memory.raptor import cluster_scenes, write_raptor_node_full
 logger = get_logger("node_compress_memory")
 
 _SUMMARY_CHAR_CAP = 1200
+
+
+async def _summarize_clusters(clusters: list[str]) -> str:
+    """
+    Sprint 4: LLM flat summarization on the planner endpoint, retried once,
+    falling back to the deterministic extraction. Consolidation must never
+    block the commit path on a flaky endpoint.
+    """
+    config = load_config()
+    joined = "\n\n---\n\n".join(clusters)[:12_000]
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "Summarize the following chapter's scenes into one dense, factual "
+                "chapter summary (6-10 sentences). Preserve names, causal links, and "
+                "any irreversible state changes. Plain prose only.\n\n" + joined
+            ),
+        }
+    ]
+    for attempt in range(2):
+        try:
+            text = await call_llm_module.collect_llm_response(
+                config.endpoints.planner, messages, temperature=0.2, stream=False
+            )
+            if text and text.strip():
+                return text.strip()[:_SUMMARY_CHAR_CAP * 2]
+        except Exception as e:  # noqa: BLE001 — fallback path below
+            logger.warning("chapter summarization attempt %d failed: %r", attempt + 1, e)
+    logger.warning("chapter summarization fell back to deterministic extraction.")
+    return flat_summarize(clusters)
 
 
 def flat_summarize(cluster_texts: list[str]) -> str:
@@ -58,7 +91,7 @@ async def node_compress_memory(state: OrchestratorState) -> dict:
     try:
         scene_texts = sqlite_db.get_scene_texts_for_chapter(db, pointer.chapter_id)
         clusters = cluster_scenes(scene_texts)
-        summary = flat_summarize(clusters)
+        summary = await _summarize_clusters(clusters)
         write_raptor_node_full(
             db,
             node_id=f"raptor_chapter_{pointer.chapter_id}",
