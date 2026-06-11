@@ -37,96 +37,61 @@ alignment_bp = Blueprint("alignment", __name__)
 
 @alignment_bp.route("/alignment")
 async def alignment_view():
-    """
-    Render the Alignment Dashboard Claim Card review view.
+    """Render the Alignment Dashboard with the pending-claim count."""
+    from memory import provisional_store
 
-    Purpose:
-        Serves templates/alignment.html with the rapid-throughput coreference review
-        interface. Passes the count of pending provisional claims to the template.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        Rendered HTML response for the alignment template.
-    """
-    pass
+    pending = provisional_store.list_pending()
+    return await render_template("alignment.html", pending_count=len(pending))
 
 
 @alignment_bp.route("/alignment/claims")
 async def get_claims():
-    """
-    Return all pending provisional coreference claims as JSON.
+    """All pending provisional coreference claims as Claim Card data."""
+    from memory import provisional_store
 
-    Purpose:
-        Queries Graphiti for all edges tagged as provisional (mid-confidence) that
-        have not yet been confirmed, contradicted, or resolved by the 200-token
-        window heuristic. Returns them as Claim Card data for the frontend.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        JSON array of claim dicts:
-        [{claim_id, pronoun_text, linked_entity_name, confidence, source_text_snippet}]
-    """
-    pass
+    return provisional_store.list_pending()
 
 
 @alignment_bp.route("/alignment/confirm", methods=["POST"])
 async def confirm_claim():
-    """
-    Confirm a provisional coreference link, upgrading it to high-confidence.
+    """Confirm a provisional link → permanent high-confidence fact."""
+    from memory import provisional_store
 
-    Purpose:
-        Receives a claim_id from the frontend. Finds the corresponding provisional
-        Graphiti edge and removes the provisional tag, making it a permanent
-        high-confidence edge. The edge will be injected as absolute fact by
-        node_assemble_context on subsequent beats.
-
-    Inputs:
-        POST body (JSON): {"claim_id": str}
-
-    Outputs:
-        JSON: {"status": "confirmed", "claim_id": str}
-    """
-    pass
+    payload = await request.get_json(force=True)
+    if provisional_store.confirm(payload["claim_id"]):
+        return {"status": "confirmed", "claim_id": payload["claim_id"]}
+    return {"status": "error", "message": "unknown claim_id"}, 404
 
 
 @alignment_bp.route("/alignment/contradict", methods=["POST"])
 async def contradict_claim():
-    """
-    Contradict a provisional coreference link, dropping the Graphiti edge.
+    """Contradict a provisional link → edge dropped permanently."""
+    from memory import provisional_store
 
-    Purpose:
-        Receives a claim_id from the frontend. Deletes the corresponding provisional
-        Graphiti edge permanently. The dropped link will no longer be injected by
-        node_assemble_context.
-
-    Inputs:
-        POST body (JSON): {"claim_id": str}
-
-    Outputs:
-        JSON: {"status": "contradicted", "claim_id": str}
-    """
-    pass
+    payload = await request.get_json(force=True)
+    if provisional_store.contradict(payload["claim_id"]):
+        return {"status": "contradicted", "claim_id": payload["claim_id"]}
+    return {"status": "error", "message": "unknown claim_id"}, 404
 
 
 @alignment_bp.route("/alignment/ingest", methods=["POST"])
 async def ingest():
-    """
-    Start manuscript ingestion as a background async task.
+    """Save an uploaded manuscript and launch background ingestion."""
+    import asyncio
+    import uuid
 
-    Purpose:
-        Accepts a manuscript file upload. Saves it to a temporary path and launches
-        ingestion/pipeline.ingest_manuscript() as a background asyncio task.
-        Returns immediately with 202 Accepted. Progress is streamed to the SSE endpoint.
+    from core import runtime
+    from core.config_loader import load_config
+    from ingestion.pipeline import ingest_manuscript
 
-    Inputs:
-        POST body (multipart/form-data): manuscript file upload.
+    files = await request.files
+    if "manuscript" not in files:
+        return {"status": "error", "message": "no 'manuscript' file in upload"}, 400
+    upload = files["manuscript"]
+    target = runtime.DATA_DIR / f"upload_{uuid.uuid4().hex[:8]}.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await upload.save(target)
 
-    Outputs:
-        JSON: {"status": "ingestion_started"}
-        HTTP 202 Accepted.
-    """
-    pass
+    config = load_config()
+    asyncio.get_event_loop().create_task(ingest_manuscript(target, config, "default"))
+    return {"status": "ingestion_started", "file": target.name}, 202

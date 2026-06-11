@@ -34,146 +34,156 @@ Architecture role:
       and branch restore.
 """
 
-from quart import Blueprint, render_template, request
+import json
+from contextlib import closing
+
+from quart import Blueprint, Response, render_template, request
 
 codex_bp = Blueprint("codex", __name__)
 
 
 @codex_bp.route("/codex")
 async def codex_view():
-    """
-    Render the Memory Codex explorer view.
+    """Render the Memory Codex explorer view (panel data loads lazily via JSON)."""
+    from core import runtime
+    from memory import sqlite_db
 
-    Purpose:
-        Serves templates/codex.html with initial counts for Characters, Threads,
-        and Branches panels. The detailed data for each panel is loaded lazily
-        via the JSON API endpoints below.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        Rendered HTML response for the codex template.
-    """
-    pass
+    with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
+        counts = {
+            "characters": conn.execute("SELECT COUNT(*) FROM Characters").fetchone()[0],
+            "threads": conn.execute("SELECT COUNT(*) FROM Threads").fetchone()[0],
+        }
+    from memory.branch_manager import list_snapshots
+    counts["branches"] = len(list_snapshots())
+    return await render_template("codex.html", counts=counts)
 
 
 @codex_bp.route("/codex/characters")
 async def get_characters():
-    """
-    Return all characters with their current PAD states and style profile status.
+    """Characters with latest PAD state and style-profile presence flag."""
+    from core import runtime
+    from memory import sqlite_db
 
-    Purpose:
-        Queries SQLite Characters and CharacterEmotions tables for all character
-        rows. Also checks data/styles/ for the existence of style_char_{id}.json
-        files to indicate whether a style profile has been distilled for each character.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        JSON array: [{id, name, description, pad: {pleasure, arousal, dominance},
-            has_style_profile: bool}]
-    """
-    pass
+    result = []
+    for char in sqlite_db.get_characters(runtime.SQLITE_PATH):
+        history = sqlite_db.get_recent_character_emotions(runtime.SQLITE_PATH, char["char_id"], limit=1)
+        pad = (
+            {k: history[0][k] for k in ("pleasure", "arousal", "dominance")}
+            if history else {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0}
+        )
+        style_path = runtime.STYLES_DIR / f"style_char_{char['char_id']}.json"
+        result.append(
+            {"id": char["char_id"], "name": char["name"], "description": char.get("description") or "",
+             "pad": pad, "has_style_profile": style_path.exists()}
+        )
+    return result
 
 
 @codex_bp.route("/codex/threads")
 async def get_threads():
-    """
-    Return all subplot threads sorted by priority_score DESC.
+    """All threads, priority DESC, for the Kanban board."""
+    from core import runtime
+    from memory import sqlite_db
 
-    Purpose:
-        Queries SQLite Threads table for all thread rows. Used to populate the
-        Kanban-style thread board in the Codex UI. Threads are grouped by status
-        (open, progressing, closed) in the frontend.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        JSON array: [{id, description, status, priority_score}]
-    """
-    pass
+    with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
+        rows = conn.execute("SELECT * FROM Threads ORDER BY priority DESC").fetchall()
+    return [
+        {"id": r["thread_id"], "name": r["name"], "description": r["description"] or "",
+         "status": r["status"], "priority_score": r["priority"]}
+        for r in rows
+    ]
 
 
 @codex_bp.route("/codex/threads/priority", methods=["POST"])
 async def update_thread_priority():
-    """
-    Update a thread's priority_score (e.g., after drag-and-drop reordering).
+    """Persist a Kanban drag's new priority_score."""
+    from core import runtime
+    from memory import sqlite_db
 
-    Purpose:
-        Receives a thread_id and new priority_score from the frontend Kanban drag.
-        Updates the Threads table in SQLite. The updated priority takes effect at
-        the next node_plan_arc or node_plan_chapter invocation.
-
-    Inputs:
-        POST body (JSON): {"thread_id": str, "priority_score": float}
-
-    Outputs:
-        JSON: {"status": "updated", "thread_id": str}
-    """
-    pass
+    payload = await request.get_json(force=True)
+    with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
+        conn.execute(
+            "UPDATE Threads SET priority = ? WHERE thread_id = ?",
+            (float(payload["priority_score"]), payload["thread_id"]),
+        )
+        conn.commit()
+    return {"status": "updated", "thread_id": payload["thread_id"]}
 
 
 @codex_bp.route("/codex/branches")
 async def get_branches():
-    """
-    Return metadata for all available chapter-boundary snapshot ZIPs.
+    """Snapshot metadata for the Branches panel (newest first)."""
+    from memory.branch_manager import list_snapshots
 
-    Purpose:
-        Calls memory/branch_manager.list_snapshots() to enumerate all ZIP files
-        in data/snapshots/. Returns metadata for the Branches panel in the Codex UI,
-        sorted newest first.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        JSON array: [{filename, chapter_id, timestamp, size_bytes, path}]
-    """
-    pass
+    return list_snapshots()
 
 
 @codex_bp.route("/codex/restore", methods=["POST"])
 async def restore_branch():
-    """
-    Initiate a branch restore from a named snapshot.
+    """Pause-guarded O(1) branch restore from a named snapshot."""
+    from memory import branch_manager
+    from routes import control
 
-    Purpose:
-        Receives a snapshot filename and optional "Reasons" directive. Calls
-        memory/branch_manager.restore_snapshot() to decompress the ZIP and replace
-        the live database files. If a Reasons directive is provided, it is injected
-        into the active_context_package so the planning nodes steer the story in a
-        new direction on resume.
+    payload = await request.get_json(force=True)
+    if not control.is_paused():
+        return {"status": "error", "message": "FSM must be paused before restore"}, 409
 
-        The FSM must be paused (pause_requested=True) before branch restore is safe.
-        This endpoint checks pause state and returns an error if the FSM is running.
-
-    Inputs:
-        POST body (JSON): {"snapshot_filename": str, "reasons": str | null}
-
-    Outputs:
-        JSON: {"status": "restored", "snapshot": str} on success.
-        JSON: {"status": "error", "message": "FSM must be paused before restore"} if running.
-    """
-    pass
+    snapshot_path = branch_manager.SNAPSHOTS_DIR / payload["snapshot_filename"]
+    if not snapshot_path.exists():
+        return {"status": "error", "message": f"snapshot not found: {payload['snapshot_filename']}"}, 404
+    result = branch_manager.restore_snapshot(snapshot_path, branch_reason=payload.get("reasons"))
+    return {"status": "restored", "snapshot": payload["snapshot_filename"],
+            "branch_reason": result.get("branch_reason")}
 
 
 @codex_bp.route("/codex/manuscript")
 async def get_manuscript():
-    """
-    Return the full assembled manuscript text from committed beats.
+    """Assembled manuscript prose (optionally one chapter), reading order."""
+    from core import runtime
+    from memory import sqlite_db
 
-    Purpose:
-        Queries SQLite for all committed Beat rows ordered by arc → chapter → scene →
-        beat_index. Assembles the prose_delta fields into the full manuscript text.
-        Returns as plain text for display or export.
+    chapter_id = request.args.get("chapter_id")
+    query = (
+        "SELECT s.prose_text FROM Scenes s "
+        "JOIN Chapters c ON s.chapter_id = c.chapter_id "
+        "JOIN Arcs a ON c.arc_id = a.arc_id "
+        "WHERE s.prose_text IS NOT NULL "
+    )
+    params: tuple = ()
+    if chapter_id:
+        query += "AND s.chapter_id = ? "
+        params = (chapter_id,)
+    query += "ORDER BY a.created_at ASC, c.chapter_index ASC, s.scene_index ASC"
+    with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
+        rows = conn.execute(query, params).fetchall()
+    text = "\n\n".join((r[0] or "").strip() for r in rows if r[0])
+    return Response(text, content_type="text/plain; charset=utf-8")
 
-    Inputs:
-        Optional query param: ?chapter_id=str to filter to a specific chapter.
 
-    Outputs:
-        Plain text response: the assembled manuscript prose.
-    """
-    pass
+@codex_bp.route("/codex/raptor")
+async def get_raptor_tree():
+    """RAPTOR nodes grouped by level for the breadcrumb panel."""
+    from core import runtime
+    from memory import sqlite_db
+
+    with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
+        rows = conn.execute(
+            "SELECT node_id, level, summary_text, created_at FROM RaptorNodes "
+            "ORDER BY level DESC, created_at DESC"
+        ).fetchall()
+    return [
+        {"node_id": r["node_id"], "level": r["level"],
+         "summary_text": r["summary_text"] or "", "created_at": r["created_at"]}
+        for r in rows
+    ]
+
+
+@codex_bp.route("/codex/events")
+async def get_events():
+    """Most recent event-log records (virtualized panel; newest first)."""
+    from core import runtime
+    from memory.event_log import iter_events
+
+    limit = int(request.args.get("limit", 200))
+    events = list(iter_events(runtime.EVENT_LOG_PATH)) if runtime.EVENT_LOG_PATH.exists() else []
+    return events[-limit:][::-1]

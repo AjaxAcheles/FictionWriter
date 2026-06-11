@@ -1,20 +1,48 @@
-<!--
-  templates/dashboard.html
-
-  Purpose:
-    Main generation dashboard. 2-column layout:
-    - Left (main): Live prose stream panel. Tokens arrive via SSE and are appended
-      here. beat_start events clear the panel for re-used beat_ids and wrap tokens
-      in data-beat-id divs for source attribution. Word count is shown below the stream.
-    - Right (sidebar): Telemetry panel with PAD radar chart (Chart.js), stylometric
-      drift line graph (Chart.js, Burrows' Delta advisory only), planning bullet feed
-      (marked.js renders markdown), critic reasoning panels (one per critic).
-
-    The Live Command Center (pause/resume/stop buttons) is fixed at the bottom.
-    Planning bullet stream, critic reasoning, and PAD updates arrive via the same
-    SSE /stream endpoint using event type routing in static/js/main.js.
--->
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
+
 {% block content %}
+<div class="row g-3">
+  <!-- Prose stream column -->
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Live Prose Stream</span>
+        <div class="btn-group btn-group-sm">
+          <button class="btn btn-success" id="btn-generate">Generate</button>
+          <button class="btn btn-warning" id="btn-pause">Pause</button>
+          <button class="btn btn-info" id="btn-resume">Resume</button>
+          <button class="btn btn-danger" id="btn-stop">Hard Stop</button>
+        </div>
+      </div>
+      <div class="card-body prose-stream" id="prose-stream" aria-live="polite"></div>
+      <div class="card-footer text-secondary small">
+        <span id="fsm-status">idle</span> · <span id="word-count">0</span> words committed
+      </div>
+    </div>
+  </div>
+
+  <!-- Telemetry sidebar -->
+  <div class="col-lg-4 d-flex flex-column gap-3">
+    <div class="card">
+      <div class="card-header">PAD Emotional State</div>
+      <div class="card-body"><canvas id="pad-radar" height="220"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header" data-bs-toggle="tooltip"
+           title="STEL cosine distance gates routing; Burrows' Delta is advisory only.">
+        Stylometric Drift
+      </div>
+      <div class="card-body"><canvas id="drift-chart" height="180"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header">Critic Feed</div>
+      <div class="card-body small" id="critic-feed" style="max-height:180px;overflow-y:auto"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}

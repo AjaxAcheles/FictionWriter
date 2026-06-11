@@ -1,21 +1,93 @@
-<!--
-  templates/settings.html
-
-  Purpose:
-    Settings editor. Form-driven configuration interface for all config.yaml parameters.
-    Changes are submitted via POST /settings and take effect at the next beat boundary.
-
-    Sections:
-    - Threshold sliders: stel_cosine_distance (Dc gate), ewma_alpha, passive_voice_density,
-      voice_evolution_l2_norm_limit, etc. All sliders show current value and bounds.
-    - Generation caps: retry_count_max, craft_consultant_threshold, replan_count_max.
-    - Endpoint configuration: per-role base_url, model_name, tokenizer_family,
-      supports_concurrent_critics, grammar_constraint_strategy. Dynamic sliders for each.
-    - Endpoint connectivity test: "Test All Endpoints" button triggers POST /settings/test
-      and shows green/red status indicators per endpoint role.
-    - Ingestion settings: sliding_window_tokens, coreference_confidence_floor.
--->
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
+
 {% block content %}
+<div class="row">
+  <div class="col-lg-7">
+    <div class="card mb-3">
+      <div class="card-header">Generation Thresholds</div>
+      <div class="card-body">
+        <form method="post" action="/settings" id="settings-form">
+          <div class="mb-3">
+            <label class="form-label" for="dc-slider" data-bs-toggle="tooltip"
+                   title="STEL cosine distance only — Burrows' Delta never gates routing.">
+              D<sub>c</sub> threshold (STEL cosine distance):
+              <strong id="dc-value">{{ config.thresholds.stel_cosine_distance }}</strong>
+            </label>
+            <input type="range" class="form-range" id="dc-slider" name="stel_cosine_distance"
+                   min="0.01" max="0.5" step="0.01"
+                   value="{{ config.thresholds.stel_cosine_distance }}"
+                   oninput="document.getElementById('dc-value').textContent=this.value">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">PAD EWMA alpha:
+              <strong id="alpha-value">{{ config.thresholds.ewma_alpha }}</strong></label>
+            <input type="range" class="form-range" name="ewma_alpha" min="0.05" max="0.95" step="0.05"
+                   value="{{ config.thresholds.ewma_alpha }}"
+                   oninput="document.getElementById('alpha-value').textContent=this.value">
+          </div>
+          <div class="row">
+            <div class="col"><label class="form-label">retry_count_max</label>
+              <input class="form-control" type="number" name="retry_count_max"
+                     value="{{ config.generation.retry_count_max }}"></div>
+            <div class="col"><label class="form-label">craft threshold</label>
+              <input class="form-control" type="number" name="craft_consultant_threshold"
+                     value="{{ config.generation.craft_consultant_threshold }}"></div>
+            <div class="col"><label class="form-label">replan_count_max</label>
+              <input class="form-control" type="number" name="replan_count_max"
+                     value="{{ config.generation.replan_count_max }}"></div>
+          </div>
+          <div class="form-check form-switch mt-3">
+            <input class="form-check-input" type="checkbox" name="headless_mode" value="true"
+                   {% if config.headless_mode %}checked{% endif %}>
+            <label class="form-check-label">Headless mode (terminal escalation exports and halts — no human pause)</label>
+          </div>
+          <button class="btn btn-primary mt-3" type="submit">Save (applies at next beat boundary)</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between">
+        <span>Inference Endpoints</span>
+        <button class="btn btn-sm btn-outline-info" id="btn-test-endpoints">Test connectivity</button>
+      </div>
+      <div class="card-body">
+        <table class="table table-sm align-middle">
+          <thead><tr><th>Role</th><th>Model</th><th>Concurrent critics</th><th>Grammar</th><th></th></tr></thead>
+          <tbody>
+            {% for role in ["planner", "drafter", "critic", "pad_translator", "craft_consultant"] %}
+            {% set ep = config.endpoints|attr(role) %}
+            <tr>
+              <td>{{ role }}</td>
+              <td class="text-secondary small">{{ ep.model_name }}</td>
+              <td>{{ "✓" if ep.supports_concurrent_critics else "serial" }}</td>
+              <td>{{ ep.grammar_constraint_strategy }}</td>
+              <td><span class="endpoint-status" data-role="{{ role }}">●</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="text-secondary small mb-0">Endpoint editing (URLs, keys, toggles) writes through
+          config.yaml — edit the file directly or use the form fields; toggles take effect next session.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('btn-test-endpoints')?.addEventListener('click', async () => {
+  const res = await fetch('/settings/test', {method: 'POST'});
+  const data = await res.json();
+  document.querySelectorAll('.endpoint-status').forEach(el => {
+    const status = data[el.dataset.role];
+    el.style.color = status && status.ok ? '#3fb950' : '#f85149';
+    el.title = JSON.stringify(status);
+  });
+});
+</script>
 {% endblock %}

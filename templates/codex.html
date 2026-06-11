@@ -1,23 +1,120 @@
-<!--
-  templates/codex.html
-
-  Purpose:
-    Memory Codex — read-mostly database explorer with drag-and-drop Kanban boards.
-    Provides a navigable view of all persistent memory stores for author inspection.
-
-    Panels (tab or accordion layout):
-    - Characters: table of all characters with PAD state bars (pleasure/arousal/dominance
-      as colored progress bars) and style profile status badge (distilled / not distilled).
-    - Threads: Kanban board with three columns (open / progressing / closed). Cards are
-      drag-and-drop reorderable to adjust priority_score. POST /codex/threads/priority
-      fires on drop.
-    - Branches: table of all chapter-boundary snapshot ZIPs with chapter_id, timestamp,
-      and size. "Restore" button triggers POST /codex/restore with an optional Reasons
-      textarea for the branch direction directive.
-    - Manuscript: scrollable prose output assembled from all committed beats.
-      Chapter navigation sidebar. Export button downloads as plain text.
--->
 {% extends "base.html" %}
 {% block title %}Codex{% endblock %}
+
 {% block content %}
+<ul class="nav nav-tabs" role="tablist">
+  {% for tab in ["characters", "threads", "raptor", "events", "branches"] %}
+  <li class="nav-item"><button class="nav-link {{ 'active' if loop.first }}" data-bs-toggle="tab"
+      data-bs-target="#tab-{{ tab }}">{{ tab|capitalize }}</button></li>
+  {% endfor %}
+</ul>
+
+<div class="tab-content pt-3">
+  <div class="tab-pane fade show active" id="tab-characters">
+    <div class="row g-2" id="characters-host"><p class="text-secondary">Loading…</p></div>
+  </div>
+  <div class="tab-pane fade" id="tab-threads">
+    <div class="row g-2" id="threads-host"></div>
+  </div>
+  <div class="tab-pane fade" id="tab-raptor">
+    <ol class="breadcrumb flex-column" id="raptor-host"></ol>
+  </div>
+  <div class="tab-pane fade" id="tab-events">
+    <div id="events-host" style="max-height:60vh;overflow-y:auto" class="font-monospace small"></div>
+  </div>
+  <div class="tab-pane fade" id="tab-branches">
+    <div id="branches-host"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const levelNames = {0: 'beat', 1: 'scene', 2: 'chapter', 3: 'arc', 4: 'global'};
+
+async function loadCharacters() {
+  const chars = await (await fetch('/codex/characters')).json();
+  const host = document.getElementById('characters-host');
+  host.innerHTML = chars.length ? '' : '<p class="text-secondary">No characters yet.</p>';
+  for (const c of chars) {
+    const col = document.createElement('div');
+    col.className = 'col-md-4';
+    col.innerHTML = `<div class="card h-100"><div class="card-body">
+      <h6>${c.name} ${c.has_style_profile ? '<span class="badge bg-info">style profile</span>' : ''}</h6>
+      <p class="small text-secondary">${c.description || ''}</p>
+      <p class="small mb-0">P ${c.pad.pleasure.toFixed(2)} · A ${c.pad.arousal.toFixed(2)} · D ${c.pad.dominance.toFixed(2)}</p>
+    </div></div>`;
+    host.appendChild(col);
+  }
+}
+
+async function loadThreads() {
+  const threads = await (await fetch('/codex/threads')).json();
+  const host = document.getElementById('threads-host');
+  host.innerHTML = '';
+  for (const status of ['open', 'progressing', 'closed']) {
+    const col = document.createElement('div');
+    col.className = 'col-md-4';
+    const items = threads.filter(t => t.status === status);
+    col.innerHTML = `<div class="card"><div class="card-header text-capitalize">${status}
+        <span class="badge bg-secondary">${items.length}</span></div>
+      <div class="card-body p-2">${items.map(t =>
+        `<div class="card mb-2 p-2 small"><strong>${t.name}</strong> (${t.priority_score})
+         <div class="text-secondary">${t.description}</div></div>`).join('') || '<span class="text-secondary small">—</span>'}
+      </div></div>`;
+    host.appendChild(col);
+  }
+}
+
+async function loadRaptor() {
+  const nodes = await (await fetch('/codex/raptor')).json();
+  const host = document.getElementById('raptor-host');
+  host.innerHTML = nodes.length ? '' : '<li class="text-secondary">RAPTOR tree is empty.</li>';
+  for (const n of nodes) {
+    const li = document.createElement('li');
+    li.className = 'breadcrumb-item';
+    li.innerHTML = `<span class="badge bg-dark border">${levelNames[n.level] || n.level}</span>
+      <code>${n.node_id}</code><div class="small text-secondary">${n.summary_text.slice(0, 240)}</div>`;
+    host.appendChild(li);
+  }
+}
+
+async function loadEvents() {
+  const events = await (await fetch('/codex/events?limit=200')).json();
+  document.getElementById('events-host').innerHTML =
+    events.map(e => `<div class="${e.type === 'beat_commit' ? '' : 'text-warning'}">${JSON.stringify(e)}</div>`).join('')
+    || '<span class="text-secondary">Event log is empty.</span>';
+}
+
+async function loadBranches() {
+  const branches = await (await fetch('/codex/branches')).json();
+  const host = document.getElementById('branches-host');
+  host.innerHTML = branches.length ? '' : '<p class="text-secondary">No snapshots yet (created at chapter boundaries).</p>';
+  for (const b of branches) {
+    const row = document.createElement('div');
+    row.className = 'card mb-2';
+    row.innerHTML = `<div class="card-body py-2 d-flex justify-content-between align-items-center">
+      <div><code>${b.filename}</code>
+        <span class="small text-secondary">chapter ${b.chapter_id} · ${(b.size_bytes / 1024).toFixed(1)} KB</span></div>
+      <div class="input-group input-group-sm" style="max-width:420px">
+        <input class="form-control" placeholder="Reasons directive (optional)" data-reason>
+        <button class="btn btn-outline-danger" data-restore="${b.filename}">Restore</button>
+      </div></div>`;
+    host.appendChild(row);
+  }
+}
+document.getElementById('branches-host').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-restore]');
+  if (!btn) return;
+  const reasons = btn.closest('.input-group').querySelector('[data-reason]').value || null;
+  const res = await fetch('/codex/restore', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({snapshot_filename: btn.dataset.restore, reasons}),
+  });
+  const data = await res.json();
+  alert(data.status === 'restored' ? `Restored ${data.snapshot}` : data.message);
+});
+
+loadCharacters(); loadThreads(); loadRaptor(); loadEvents(); loadBranches();
+</script>
 {% endblock %}

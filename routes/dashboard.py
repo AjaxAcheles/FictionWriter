@@ -117,5 +117,37 @@ async def generate():
         JSON response: {"status": "started", "project_id": str}
         HTTP 202 Accepted.
     """
-    return {"status": "started", "project_id": "default"}, 202
+    import asyncio
+
+    from fsm.graph import compile_graph
+    from fsm.state import FSM_Pointer
+
+    payload = await request.get_json(silent=True) or {}
+    project_id = payload.get("project_id", "default")
+
+    initial_state = {
+        "project_id": project_id,
+        "fsm_pointer": FSM_Pointer(arc_id="", chapter_id="", scene_id="", beat_index=0),
+        "active_context_package": {},
+        "current_draft_text": "",
+        "streaming_buffer": "",
+        "critic_failures": [],
+        "stylometric_distance": 0.0,
+        "retry_count": 0,
+        "replan_count": 0,
+        "escalation_tier": 0,
+        "has_paradox": False,
+        "transient_dc_override": None,
+        "pause_requested": False,
+        "hard_stop_asserted": False,
+        "failed_beat_cache": [],
+        "best_seen_draft": None,
+        "best_seen_failure_count": None,
+    }
+
+    app = compile_graph()
+    asyncio.get_event_loop().create_task(
+        app.ainvoke(initial_state, config={"recursion_limit": 10_000})
+    )
+    return {"status": "started", "project_id": project_id}, 202
 

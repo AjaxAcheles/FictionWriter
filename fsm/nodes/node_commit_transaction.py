@@ -191,6 +191,10 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
         # 5. intent → committed
         sqlite_db.mark_commit_intent_committed(db, intent_id)
         stream_bus.publish({"type": "beat_committed", "beat_id": beat_id, "word_count": word_count})
+        stream_bus.publish({"type": "word_count", "total": sqlite_db.get_total_word_count(db) + word_count})
+        for char_id, target in (plan.get("raw_pad_targets") or {}).items():
+            stream_bus.publish({"type": "pad_update", "char_id": char_id, "pad": target})
+        stream_bus.publish({"type": "drift", "stel_dc": state.get("stylometric_distance", 0.0)})
 
         # Scene-advancement guard
         scene = sqlite_db.get_row(db, "Scenes", "scene_id", pointer.scene_id) or {}

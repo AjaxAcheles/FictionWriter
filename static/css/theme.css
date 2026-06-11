@@ -61,3 +61,32 @@
 .kanban-col {
     /* Placeholder */
 }
+
+:root, [data-bs-theme="dark"] {
+  --color-bg-base: #0f1117;
+  --color-bg-surface: #1a1d27;
+  --color-bg-elevated: #22263a;
+  --bs-body-bg: var(--color-bg-base);
+  --bs-body-color: #e6edf3;
+  --bs-secondary-color: #8b949e;
+  --bs-card-bg: var(--color-bg-surface);
+  --bs-border-color: #2d333b;
+}
+
+.card { background-color: var(--bs-card-bg); border-color: var(--bs-border-color); }
+.card-header { background-color: var(--color-bg-elevated); border-color: var(--bs-border-color); }
+
+.prose-stream {
+  min-height: 60vh;
+  max-height: 70vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.claim-card code { color: #79c0ff; }
+.breadcrumb { display: block; }
+.breadcrumb-item { margin-bottom: .75rem; }
+#critic-feed div { padding: 2px 0; border-bottom: 1px solid var(--bs-border-color); }

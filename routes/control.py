@@ -128,6 +128,13 @@ async def patch():
     Outputs:
         JSON: {"status": "patched"}
     """
+    from fsm.nodes.node_human_intervention import push_intervention
+
+    payload = await request.get_json(force=True) or {}
+    if payload.get("prose_edit"):
+        push_intervention({"action": "edit", "text": payload["prose_edit"]})
+    if payload.get("config_patch"):
+        push_intervention({"action": "config_patch", "patch": payload["config_patch"]})
     return {"status": "patched"}
 
 

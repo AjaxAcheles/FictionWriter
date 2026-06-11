@@ -41,17 +41,51 @@
     - Branch restore modal submission
 */
 
-/* SSE EventSource setup */
-/* Placeholder — implemented in Sprint 1 UI pass */
+/* SSE EventSource setup — shared by every page. Page scripts register
+   handlers on window.fwHandlers; events without a handler are ignored. */
 
-/* PAD Radar Chart */
-/* Placeholder — implemented in Sprint 1 UI pass */
+window.fwHandlers = window.fwHandlers || {};
 
-/* Stylometric Drift Line Chart */
-/* Placeholder — implemented in Sprint 1 UI pass */
+(function initSse() {
+  const source = new EventSource('/stream');
+  const dispatch = (raw) => {
+    let ev;
+    try { ev = JSON.parse(raw); } catch { return; }
+    if (ev.type && typeof window.fwHandlers[ev.type] === 'function') {
+      window.fwHandlers[ev.type](ev);
+    }
+  };
+  // Named SSE events (event: <type>) and unnamed heartbeat frames both route here.
+  source.onmessage = (e) => dispatch(e.data);
+  for (const type of ['draft_chunk', 'draft_complete', 'beat_committed', 'word_count',
+                      'status', 'critic_result', 'pad_update', 'drift',
+                      'ingestion_progress', 'ingestion_complete']) {
+    source.addEventListener(type, (e) => dispatch(e.data));
+  }
+  source.onerror = () => {
+    /* EventSource auto-reconnects; surface the state if a status element exists. */
+    const el = document.getElementById('fsm-status');
+    if (el) el.textContent = 'stream reconnecting…';
+  };
+})();
 
-/* Auto-scroll */
-/* Placeholder — implemented in Sprint 1 UI pass */
+/* Auto-scroll with manual-scroll detection */
+(function initAutoScroll() {
+  const host = document.getElementById('prose-stream');
+  if (!host) return;
+  let pinned = true;
+  host.addEventListener('scroll', () => {
+    pinned = host.scrollTop + host.clientHeight >= host.scrollHeight - 24;
+  });
+  const observer = new MutationObserver(() => {
+    if (pinned) host.scrollTop = host.scrollHeight;
+  });
+  observer.observe(host, { childList: true, characterData: true, subtree: true });
+})();
 
-/* Command Center controls */
-/* Placeholder — implemented in Sprint 1 UI pass */
+/* Bootstrap tooltips (global) */
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(
+    (el) => new bootstrap.Tooltip(el)
+  );
+});

@@ -35,6 +35,7 @@ Architecture role:
     - Writes entity and coreference data to Graphiti and SQLite.
 """
 
+import re
 from typing import Optional
 
 
@@ -61,7 +62,45 @@ async def extract_entities(chunk_text: str, project_id: str) -> list[dict]:
             entity_id (str), name (str), type (str: 'character'|'location'|'item'),
             confidence (float 0–1), mentions (List[str]: verbatim text spans).
     """
-    pass
+    # Heuristic NER: runs of capitalized words not at sentence starts (or seen
+    # repeatedly) are proper-name candidates. Confidence scales with mention
+    # frequency. LLM/spaCy NER can replace this internals without contract change.
+    candidate_re = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b")
+    sentence_starts = {m.start(2) for m in re.finditer(r"(^|[.!?]\s+)(\w)", chunk_text)}
+    counts: dict[str, list[str]] = {}
+    for match in candidate_re.finditer(chunk_text):
+        name = match.group(1)
+        if name.lower() in _STOPWORDS:
+            continue
+        # Single capitalized word at a sentence start is likely just case, not a name —
+        # unless we have seen it mid-sentence elsewhere (handled by aggregation).
+        if match.start(1) in sentence_starts and " " not in name and name not in counts:
+            continue
+        counts.setdefault(name, []).append(name)
+
+    entities = []
+    for name, mentions in counts.items():
+        frequency = len(mentions)
+        confidence = min(0.5 + 0.15 * frequency, 0.99)
+        entities.append(
+            {
+                "entity_id": f"{project_id}_{re.sub(r'[^a-z0-9]+', '_', name.lower())}",
+                "name": name,
+                "type": "character",
+                "confidence": round(confidence, 2),
+                "mentions": mentions,
+            }
+        )
+    entities.sort(key=lambda e: -e["confidence"])
+    return entities
+
+
+_STOPWORDS = {
+    "the", "a", "an", "i", "he", "she", "they", "it", "we", "you", "but", "and",
+    "chapter", "scene", "then", "when", "after", "before", "his", "her", "their",
+}
+
+_PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|theirs)\b", re.IGNORECASE)
 
 
 async def resolve_coreferences(
@@ -93,4 +132,62 @@ async def resolve_coreferences(
             provisional (bool), link_type (str: 'high'|'mid'|'low').
             Low-confidence links after MLI are still returned as 'mid' (MLI result).
     """
-    pass
+    if not entities:
+        return []
+    # Position index of every entity mention for recency scoring.
+    mention_positions: list[tuple[int, dict]] = []
+    for entity in entities:
+        for match in re.finditer(re.escape(entity["name"]), chunk_text):
+            mention_positions.append((match.start(), entity))
+    mention_positions.sort()
+
+    links = []
+    for pronoun in _PRONOUN_RE.finditer(chunk_text):
+        preceding = [(pos, e) for pos, e in mention_positions if pos < pronoun.start()]
+        if not preceding:
+            continue
+        pos, entity = preceding[-1]  # most recent antecedent
+        distance = pronoun.start() - pos
+        # Recency scoring: confidence decays with character distance, scaled by
+        # the antecedent entity's own NER confidence.
+        confidence = entity["confidence"] * max(0.2, 1.0 - distance / 2000.0)
+        if confidence >= confidence_floor:
+            link_type, provisional = "high", False
+        else:
+            # Maximum Likelihood Imputation: recency + frequency prior — the
+            # imputed link is promoted to 'mid' and flagged provisional.
+            confidence = max(confidence, confidence_floor * 0.9)
+            link_type, provisional = "mid", True
+        links.append(
+            {
+                "pronoun_text": pronoun.group(0),
+                "linked_entity_id": entity["entity_id"],
+                "confidence": round(confidence, 3),
+                "provisional": provisional,
+                "link_type": link_type,
+                "context_snippet": chunk_text[max(0, pronoun.start() - 60) : pronoun.start() + 60],
+            }
+        )
+    return links
+
+
+def persist_results(entities: list[dict], links: list[dict], chunk_text: str) -> None:
+    """
+    Write high-confidence entities to SQLite Characters and provisional links to
+    the claim store (Alignment Dashboard source). Idempotent (INSERT OR IGNORE /
+    claim de-dup is the store's concern).
+    """
+    from core import runtime
+    from memory import provisional_store, sqlite_db
+
+    for entity in entities:
+        if entity["type"] == "character" and entity["confidence"] >= 0.65:
+            sqlite_db.insert_row(
+                runtime.SQLITE_PATH,
+                "Characters",
+                {"char_id": entity["entity_id"], "name": entity["name"],
+                 "role": None, "description": None},
+            )
+    provisional = [l for l in links if l["provisional"]]
+    if provisional:
+        provisional_store.add_claims(provisional)

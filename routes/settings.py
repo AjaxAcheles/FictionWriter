@@ -34,71 +34,112 @@ settings_bp = Blueprint("settings", __name__)
 
 @settings_bp.route("/settings")
 async def settings_view():
+    """Render the Settings page pre-populated from the live config."""
+    from core.config_loader import load_config
+
+    config = load_config()
+    return await render_template("settings.html", config=config)
+
+
+# Whitelisted scalar keys writable from the Settings page, with their YAML paths.
+_WRITABLE_KEYS = {
+    "stel_cosine_distance": ("thresholds", float),
+    "ewma_alpha": ("thresholds", float),
+    "passive_voice_density": ("thresholds", float),
+    "beats_per_scene_min": ("thresholds", int),
+    "retry_count_max": ("generation", int),
+    "craft_consultant_threshold": ("generation", int),
+    "replan_count_max": ("generation", int),
+    "model_validate_retry_cap": (None, int),
+    "headless_mode": (None, lambda v: str(v).lower() in ("true", "1", "on")),
+}
+
+
+def _rewrite_config_yaml(updates: dict, config_path="config.yaml") -> None:
     """
-    Render the Settings page with current config.yaml values.
-
-    Purpose:
-        Reads the current AppConfig from app.config["APP_CONFIG"] and passes it
-        to templates/settings.html for rendering into form fields and sliders.
-        All current threshold values, endpoint configurations, and feature flags
-        are pre-populated in the form.
-
-    Inputs:
-        None (GET request).
-
-    Outputs:
-        Rendered HTML response for the settings template.
+    Comment-preserving config.yaml write-back: only the value portion of each
+    whitelisted key's line is rewritten in place.
     """
-    pass
+    import re
+    from pathlib import Path as _P
+
+    path = _P(config_path)
+    text = path.read_text(encoding="utf-8")
+    for key, value in updates.items():
+        rendered = str(value).lower() if isinstance(value, bool) else str(value)
+        text, count = re.subn(
+            rf"^(\s*{re.escape(key)}:\s*)[^#\n]*",
+            lambda m: m.group(1) + rendered + "  ",
+            text,
+            count=1,
+            flags=re.M,
+        )
+        if count == 0:
+            raise KeyError(f"config.yaml key not found for write-back: {key}")
+    path.write_text(text, encoding="utf-8")
 
 
 @settings_bp.route("/settings", methods=["POST"])
 async def update_settings():
-    """
-    Write updated settings to config.yaml and reload AppConfig.
+    """Validate then write updated settings back to config.yaml."""
+    import copy
 
-    Purpose:
-        Receives form data from the Settings page. Validates the new values by
-        constructing a candidate AppConfig. If validation passes, writes the updated
-        config back to config.yaml and updates app.config["APP_CONFIG"]. If validation
-        fails, returns a 400 error with the validation error message without modifying
-        the config file.
+    import yaml
 
-        Changes take effect at the next beat boundary — node_plan_beat re-reads config
-        at node entry. Mid-beat config changes are ignored until the next beat starts.
+    from core.config_loader import AppConfig
 
-    Inputs:
-        POST body (form data): updated config fields (threshold values, endpoint params,
-            feature flags).
+    form = await request.form
+    payload = dict(form) or (await request.get_json(silent=True) or {})
 
-    Outputs:
-        JSON: {"status": "updated"} on success.
-        JSON: {"status": "error", "message": str} on validation failure. HTTP 400.
-    """
-    pass
+    updates = {}
+    for key, raw in payload.items():
+        if key not in _WRITABLE_KEYS:
+            continue
+        _, caster = _WRITABLE_KEYS[key]
+        try:
+            updates[key] = caster(raw)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": f"invalid value for {key}: {raw!r}"}, 400
+
+    # Validate the candidate config BEFORE touching the file.
+    with open("config.yaml", "r", encoding="utf-8") as f:
+        candidate = yaml.safe_load(f)
+    for key, value in updates.items():
+        section = _WRITABLE_KEYS[key][0]
+        if section:
+            candidate[section][key] = value
+        else:
+            candidate[key] = value
+    try:
+        AppConfig(**candidate)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 400
+
+    _rewrite_config_yaml(updates)
+    return {"status": "updated", "applied": updates,
+            "note": "changes take effect at the next beat boundary"}
 
 
 @settings_bp.route("/settings/test", methods=["POST"])
 async def test_endpoints():
-    """
-    Test connectivity to all configured LLM inference endpoints.
+    """Connectivity probe (GET {base_url}/models) for every endpoint role."""
+    import httpx
 
-    Purpose:
-        Fires a minimal test request (model listing or health check) to each endpoint
-        configured in AppConfig.endpoints. Returns a connectivity status dict for each
-        endpoint role. Used by the Settings page to show green/red status indicators
-        before starting a generation session.
+    from core.config_loader import load_config
 
-    Inputs:
-        None (POST request, no body required).
-
-    Outputs:
-        JSON dict: {
-            "planner": {"status": "ok" | "error", "latency_ms": float, "error": str | null},
-            "drafter": {...},
-            "critic": {...},
-            "pad_translator": {...},
-            "craft_consultant": {...}
-        }
-    """
-    pass
+    config = load_config()
+    results = {}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+        for role, endpoint in vars(config.endpoints).items():
+            if not hasattr(endpoint, "base_url"):
+                continue
+            url = f"{endpoint.base_url.rstrip('/')}/models"
+            try:
+                response = await client.get(
+                    url, headers={"Authorization": f"Bearer {endpoint.api_key}"}
+                )
+                results[role] = {"ok": response.status_code < 500,
+                                 "status_code": response.status_code}
+            except Exception as e:
+                results[role] = {"ok": False, "error": type(e).__name__}
+    return results

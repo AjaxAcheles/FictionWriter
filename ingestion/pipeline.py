@@ -65,7 +65,26 @@ async def ingest_manuscript(
         None. Side effects: writes character, entity, and provisional coreference
         link data to SQLite and Graphiti.
     """
-    pass
+    from core import stream_bus
+    from ingestion.coreference import extract_entities, resolve_coreferences, persist_results
+
+    text = Path(manuscript_path).read_text(encoding="utf-8", errors="replace")
+    endpoint = config.endpoints.planner
+    chunk_index = 0
+    async for chunk in _chunk_text(
+        text, config.ingestion.sliding_window_tokens, endpoint.tokenizer_family
+    ):
+        entities = await extract_entities(chunk, project_id)
+        links = await resolve_coreferences(
+            chunk, entities, config.thresholds.coreference_confidence_floor
+        )
+        persist_results(entities, links, chunk)
+        chunk_index += 1
+        stream_bus.publish(
+            {"type": "ingestion_progress", "chunks_processed": chunk_index,
+             "entities": len(entities), "links": len(links)}
+        )
+    stream_bus.publish({"type": "ingestion_complete", "chunks_processed": chunk_index})
 
 
 async def _chunk_text(
@@ -94,4 +113,24 @@ async def _chunk_text(
     Outputs:
         AsyncIterator[str]: Yields one text chunk per iteration in document order.
     """
-    pass
+    from llm.tokenizer import count_tokens
+
+    words = text.split()
+    if not words:
+        return
+    # Word-level windows sized so each window approximates window_tokens tokens.
+    # The tokens-per-word ratio is measured on a leading sample for the routing
+    # family in use — accurate enough for overlap continuity, cheap to compute.
+    sample = " ".join(words[:500])
+    sample_tokens = max(1, count_tokens(sample, tokenizer_family))
+    tokens_per_word = sample_tokens / max(1, len(words[:500]))
+    window_words = max(1, int(window_tokens / tokens_per_word))
+    step = max(1, int(window_words * (1.0 - overlap_fraction)))
+
+    for start in range(0, len(words), step):
+        chunk_words = words[start : start + window_words]
+        if not chunk_words:
+            break
+        yield " ".join(chunk_words)
+        if start + window_words >= len(words):
+            break

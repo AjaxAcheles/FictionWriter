@@ -30,6 +30,9 @@ from core.logger import configure_log_level
 from core.runtime import init_resources
 from routes.dashboard import dashboard_bp
 from routes.control import control_bp
+from routes.alignment import alignment_bp
+from routes.codex import codex_bp
+from routes.settings import settings_bp
 
 
 def create_app(config_path: Path = Path("config.yaml")) -> Quart:
@@ -62,6 +65,9 @@ def create_app(config_path: Path = Path("config.yaml")) -> Quart:
 
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(control_bp)
+    app.register_blueprint(alignment_bp)
+    app.register_blueprint(codex_bp)
+    app.register_blueprint(settings_bp)
 
     @app.before_serving
     async def startup() -> None:
