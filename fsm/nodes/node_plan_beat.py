@@ -142,8 +142,7 @@ async def _translate_pad_constraint(
     string, logged at WARNING. Garbage output (empty/whitespace) counts as a
     failure. Never raises.
     """
-    prompt = loader.load_and_render(
-        "node_plan_beat_pad",
+    prompt = loader.load_and_render("node_plan_beat_pad.xml.j2",
         {
             "raw_baseline_constraint": baseline,
             "pad_region": region_key,
@@ -231,8 +230,7 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
             pad_states[char["char_id"]] = ewma_pad(history, alpha)
 
         existing_count = sqlite_db.get_committed_beat_count(db, pointer.scene_id)
-        prompt = loader.load_and_render(
-            "node_plan_beat",
+        prompt = loader.load_and_render("node_plan_beat.xml.j2",
             {
                 "scene_id": pointer.scene_id,
                 "scene_description": scene.get("description") or "",

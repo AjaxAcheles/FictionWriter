@@ -43,7 +43,7 @@ async def node_draft_prose(state: OrchestratorState) -> dict:
     package = state["active_context_package"]
 
     try:
-        prompt = PromptLoader().load_and_render("node_draft_prose", package)
+        prompt = PromptLoader().load_and_render("node_draft_prose.xml.j2", package)
         messages = [{"role": "user", "content": prompt}]
 
         chunks: list[str] = []

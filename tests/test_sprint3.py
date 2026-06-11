@@ -38,6 +38,15 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "SNAPSHOTS_DIR", tmp_path / "snapshots")
     monkeypatch.setattr(runtime, "STYLES_DIR", tmp_path / "styles")
     sqlite_db.init_db(runtime.SQLITE_PATH)
+
+    # Hermetic tokenizer: tiktoken's first use downloads its BPE vocab over the
+    # network. Tests must run offline (CI / sandboxes), so the cached encoder is
+    # replaced with a whitespace splitter — the budget *routing* logic stays real.
+    class _FakeEncoder:
+        def encode(self, text):
+            return text.split()
+
+    monkeypatch.setattr("llm.tokenizer._get_tiktoken_encoder", lambda: _FakeEncoder())
     return runtime
 
 

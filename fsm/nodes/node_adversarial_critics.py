@@ -64,7 +64,7 @@ async def _run_critic(critic: str, config, draft: str, package: dict, threads: l
         "author_style_baseline": package.get("author_style_baseline", ""),
         "raptor_chapter_summary": package.get("raptor_chapter_summary", ""),
     }
-    prompt = PromptLoader().load_and_render(f"node_adversarial_critics_{critic}", context)
+    prompt = PromptLoader().load_and_render(f"node_adversarial_critics_{critic}.xml.j2", context)
     failure = await call_llm_module.call_llm_structured(
         config.endpoints.critic,
         [{"role": "user", "content": prompt}],

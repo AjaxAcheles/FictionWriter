@@ -296,4 +296,9 @@ def _scan_commit_intents_at_startup(db_path: Path) -> None:
             logger.debug("CommitIntent startup scan: clean (no pending rows).")
     except sqlite3.OperationalError as e:
         if "no such table" in str(e):
-            # CommitInt
+            # CommitIntent table not yet created (schema not initialized).
+            logger.debug("CommitIntent startup scan: table absent, skipping.")
+            return
+        # Any other operational error (locked/corrupt DB, disk I/O) is a real
+        # problem and must not be silently swallowed as "table absent".
+        raise

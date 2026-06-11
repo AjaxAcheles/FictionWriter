@@ -56,7 +56,8 @@ def locate_offending_text(draft: str, offending: str) -> bool:
     window = len(offending)
     if window == 0 or len(draft) < window // 2:
         return False
-    step = max(1, window // 2)
+    # Fine-grained scan for typical beat lengths; coarser for very long drafts.
+    step = 1 if len(draft) <= 10_000 else max(1, window // 4)
     matcher = difflib.SequenceMatcher(a=offending.lower())
     for i in range(0, max(1, len(draft) - window // 2), step):
         matcher.set_seq2(draft[i : i + window].lower())
@@ -125,8 +126,7 @@ async def node_revise_prose(state: OrchestratorState) -> dict:
             logger.info("revision token budget: dropping to Tier B lean context set")
             context_block = ""  # lean set: draft + failures + diagnosis + beat entry only
 
-        prompt = PromptLoader().load_and_render(
-            "node_revise_prose",
+        prompt = PromptLoader().load_and_render("node_revise_prose.xml.j2",
             {
                 "current_draft": draft,
                 "failures": failures_text,
