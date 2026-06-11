@@ -7,7 +7,7 @@
     PAD dominance reflection in word choice, subtext (characters not saying what they mean),
     and dialogue attribution flatness (overuse of "said" without action beats).
 
-    Output is grammar-constrained to a JSON array of FailureObject dicts.
+    Output is grammar-constrained to a SINGLE FailureObject JSON object.
     critic_source must be "dialogue" for all entries.
 
   Jinja2 Variables:
@@ -20,21 +20,21 @@
     {{ author_style_baseline }} str  — Author's established voice for reference.
 
   Output schema (grammar-constrained):
-    JSON array of FailureObject dicts:
-    [{
+    One FailureObject JSON object:
+    {
       "error_code": "DIALOGUE_FLAT",
       "offending_text": "<verbatim short substring>",
       "suggested_fix": "<correction instruction>",
       "critic_source": "dialogue"
-    }]
-    Empty array [] if no issues found.
+    }
+    If no issues are found, emit error_code "NONE" with empty offending_text/suggested_fix.
 #}
 
 <prompt>
   <system>
     You are a dialogue editor for literary fiction. Identify dialogue and character voice
-    failures in the draft passage. Output a JSON array of FailureObject dicts only.
-    Empty array if no issues found.
+    failures in the draft passage. Output exactly ONE FailureObject JSON object only — the single most severe issue.
+    If the draft is clean, set error_code to "NONE".
   </system>
 
   <character_reference>

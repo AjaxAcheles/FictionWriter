@@ -10,7 +10,7 @@
        required resolution. If a contradiction is found (e.g., a character dies who
        has an unresolved Thread), the critic emits a THREAD_PARADOX FailureObject.
 
-    Output is grammar-constrained to a JSON array of FailureObject dicts.
+    Output is grammar-constrained to a SINGLE FailureObject JSON object.
     node_adversarial_critics calls FailureObject.model_validate() on each entry;
     schema-invalid output triggers a retry.
 
@@ -26,22 +26,22 @@
     {{ epistemic_beliefs }}  str  — Provisional coreference links flagged as unconfirmed.
 
   Output schema (grammar-constrained):
-    JSON array of FailureObject dicts:
-    [{
+    One FailureObject JSON object:
+    {
       "error_code": "CONTINUITY_BREAK" | "THREAD_PARADOX",
       "offending_text": "<verbatim short substring>",
       "suggested_fix": "<correction instruction>",
       "critic_source": "continuity"
-    }]
-    Empty array [] if no issues found.
+    }
+    If no issues are found, emit error_code "NONE" with empty offending_text/suggested_fix.
 #}
 
 <prompt>
   <system>
     You are a continuity editor for a long-form fiction manuscript. Identify factual
     inconsistencies and thread contradictions in the draft passage below.
-    Output a JSON array of FailureObject dicts only — no prose, no explanation.
-    Empty array if no issues found.
+    Output exactly ONE FailureObject JSON object — no prose, no explanation, no array brackets. Report the single most severe issue.
+    If the draft is clean, set error_code to "NONE".
   </system>
 
   <authoritative_world_state>
@@ -63,6 +63,6 @@
     2. THREAD_PARADOX: Any event in the draft that contradicts a required resolution of an
        open thread (e.g., a character death when that character has an unresolved Thread).
        Use error_code "THREAD_PARADOX". This is a structural failure, not a quality failure.
-    Output JSON array. critic_source must be "continuity" for all entries.
+    Output ONE JSON object. critic_source must be "continuity". If clean, error_code "NONE".
   </instruction>
 </prompt>

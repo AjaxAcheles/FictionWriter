@@ -33,6 +33,7 @@ Architecture role:
       from RaptorNodes SQLite table) and reset (starts with empty tree).
 """
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -115,8 +116,54 @@ def write_raptor_node(
 
     Outputs:
         None. Side effect: inserts or updates one RaptorNodes row.
+
+    Note:
+        The RaptorNodes table has no parent_id column; parent linkage is encoded
+        inside source_scene_ids_json as {"parent_id": ..., "scene_ids": [...]}.
+        Callers that need scene provenance should pass it via write_raptor_node_full.
     """
-    pass
+    write_raptor_node_full(db_path, node_id, parent_id, level, summary, scene_ids=[])
+
+
+_LEVEL_TO_INT = {"beat": 0, "scene": 1, "chapter": 2, "arc": 3, "global": 4}
+_INT_TO_LEVEL = {v: k for k, v in _LEVEL_TO_INT.items()}
+
+
+def write_raptor_node_full(
+    db_path: Path,
+    node_id: str,
+    parent_id: Optional[str],
+    level: str,
+    summary: str,
+    scene_ids: list[str],
+) -> None:
+    """write_raptor_node with explicit scene provenance (Sprint 3)."""
+    if level not in _LEVEL_TO_INT:
+        raise ValueError(f"write_raptor_node: unknown level {level!r}")
+    from contextlib import closing
+    from datetime import datetime, timezone
+
+    from memory.sqlite_db import get_connection
+
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO RaptorNodes (node_id, level, summary_text, source_scene_ids_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                level = excluded.level,
+                summary_text = excluded.summary_text,
+                source_scene_ids_json = excluded.source_scene_ids_json
+            """,
+            (
+                node_id,
+                _LEVEL_TO_INT[level],
+                summary,
+                json.dumps({"parent_id": parent_id, "scene_ids": scene_ids}),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
 
 
 def get_raptor_summaries(
@@ -145,5 +192,27 @@ def get_raptor_summaries(
     Outputs:
         dict: Summaries keyed by level (e.g., {'chapter': '...', 'arc': '...'}).
             Missing levels have empty string values.
+
+    Note:
+        Sprint 3 implementation: most-recent summary per requested level (the
+        semantic tree traversal with cosine gating arrives with real embeddings
+        in Sprint 5+). Reads live RaptorNodes data — never stubbed.
     """
-    return {}
+    from contextlib import closing
+
+    from memory.sqlite_db import get_connection
+
+    result = {level: "" for level in levels}
+    with closing(get_connection(db_path)) as conn:
+        for level in levels:
+            level_int = _LEVEL_TO_INT.get(level)
+            if level_int is None:
+                continue
+            row = conn.execute(
+                "SELECT summary_text FROM RaptorNodes WHERE level = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (level_int,),
+            ).fetchone()
+            if row and row[0]:
+                result[level] = row[0]
+    return result

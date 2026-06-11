@@ -38,22 +38,41 @@ from fsm.state import OrchestratorState
 
 def edge_commit_router(state: OrchestratorState) -> str:
     """
-    Query SQLite to determine the next planning node after a successful beat commit.
+    Query SQLite ground truth to pick the next planning node after a commit.
 
-    Purpose:
-        Implements the five-step query cascade described in the module docstring.
-        All queries filter by the current fsm_pointer fields (arc_id, chapter_id,
-        scene_id) to scope lookups to the active narrative position.
-
-    Inputs:
-        state['fsm_pointer']: FSM_Pointer — current arc/chapter/scene/beat position.
-            Used as filter context for all SQLite queries.
-
-    Outputs:
-        str: One of:
-            "node_plan_beat"    — more beats remain in the current scene.
-            "node_plan_chapter" — scene or chapter boundary; schedule next unit.
-            "node_plan_global"  — arc exhausted but word target not met; continue.
-            "END"               — manuscript complete; trigger Export Pipeline.
+    Cascade (first match wins):
+    1. Open scene with work remaining (planned beats, or the scene-advancement
+       guard kept it open) → "node_plan_beat".
+    2. Remaining scenes in the chapter → "node_plan_chapter".
+    3. Remaining chapters in the arc → "node_plan_chapter".
+    4. Arcs exhausted, word target unmet → "node_plan_global" (continuation arc).
+    5. Manuscript complete → "END".
     """
-    pass
+    from core import runtime
+    from core.config_loader import load_config
+    from memory import sqlite_db
+
+    config = load_config()
+    db = runtime.SQLITE_PATH
+    pointer = state["fsm_pointer"]
+
+    # 1. Current scene still open? (covers both planned beats remaining AND the
+    #    scene-advancement guard keeping a short scene open for extension.)
+    scene = sqlite_db.get_row(db, "Scenes", "scene_id", pointer.scene_id)
+    if scene is not None and scene.get("committed_at") is None:
+        return "node_plan_beat"
+
+    # 2. Remaining scenes in the current chapter (scene_index ASC).
+    if sqlite_db.get_remaining_scenes(db, pointer.chapter_id):
+        return "node_plan_chapter"
+
+    # 3. Remaining chapters in the current arc.
+    if sqlite_db.get_remaining_chapters(db, pointer.arc_id):
+        return "node_plan_chapter"
+
+    # 4. Arc exhaustion + word count check.
+    if sqlite_db.get_total_word_count(db) < config.project.word_count_target:
+        return "node_plan_global"
+
+    # 5. Manuscript complete — Export Pipeline.
+    return "END"

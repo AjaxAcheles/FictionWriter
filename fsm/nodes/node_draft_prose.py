@@ -1,40 +1,29 @@
 """
 fsm/nodes/node_draft_prose.py
 
-Primary Prose Generation Node — Streaming LLM Drafter with Antislop Interface.
+Primary Generation Engine — streams beat prose from the drafter endpoint.
 
 Purpose:
-    The main generation engine. Formats the assembled context package into the
-    prose generation prompt, fires call_llm(stream=True) with the drafter endpoint,
-    and streams the output token-by-token to the Quart SSE endpoint for live UI
-    display. Accumulates the full response in streaming_buffer.
-
-    After generation completes, passes the full assembled text through the
-    antislop black-box interface:
-    - detect_slop(text) → List[SlopFlag]: identifies cliché/slop spans.
-    - resolve_slop(text, flags) → str: corrects flagged spans.
-
-    Both antislop functions are STUBS for Sprints 1–5 (detect_slop returns [],
-    resolve_slop returns text unchanged). Sprint 6 will replace the stubs without
-    any changes to this node — the interface is implementation-agnostic.
-
-    The beat_start SSE event is emitted before generation begins, carrying the
-    beat_id so the frontend can wrap incoming tokens in a data-beat-id div and
-    clear stale tokens if the same beat_id is re-used after a revision.
+    Renders the drafter prompt from the active context package, fires
+    call_llm(stream=True) against config.endpoints.drafter, relays each token
+    chunk to the Quart SSE bus, and passes the completed text through the
+    antislop black-box interface (detect_slop/resolve_slop — no-op stubs until
+    Sprint 6; the interface contract is final).
 
 Architecture role:
-    - Only node that emits SSE prose chunks to the frontend. All other streaming
-      (critic reasoning, planning bullets) is handled by their respective nodes.
-    - Uses: call_llm() with config.endpoints.drafter endpoint, stream=True.
-    - Loads prompt from: prompts/node_draft_prose.xml.j2 via PromptLoader.
-    - Emits a structured JSON log entry via get_logger("node_draft_prose").
+    - Triggered by node_assemble_context. Yields to node_programmatic_audit.
+    - Streams chunks via core/stream_bus.publish (consumed by routes/dashboard).
+    - Overwrites current_draft_text and streaming_buffer in OrchestratorState.
 """
 
 import time
 
+from core import stream_bus
 from core.antislop import detect_slop, resolve_slop
+from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
+from llm import call_llm as call_llm_module
 from prompts.prompt_loader import PromptLoader
 
 logger = get_logger("node_draft_prose")
@@ -42,31 +31,41 @@ logger = get_logger("node_draft_prose")
 
 async def node_draft_prose(state: OrchestratorState) -> dict:
     """
-    Stream prose generation and pass output through the antislop interface.
+    Draft the current beat's prose, streaming chunks to the UI.
 
-    Purpose:
-        Loads the prose generation prompt template, renders it with context from
-        active_context_package, and sends the request to the drafter endpoint
-        with stream=True. Yields each token chunk to the Quart SSE queue as it
-        arrives. After the stream completes, calls detect_slop() then resolve_slop()
-        on the fully assembled text. Overwrites current_draft_text with the
-        antislop-resolved output.
-
-    Inputs (from OrchestratorState):
-        state['active_context_package']: Dict — fully assembled context payload
-            from node_assemble_context, including beat constraints, character states,
-            RAPTOR summaries, and HNSW flavor context.
-
-    Outputs (dict merged into OrchestratorState):
-        current_draft_text: str — the antislop-resolved final prose text.
-        streaming_buffer: str — cleared after antislop resolution (full text
-            is now in current_draft_text).
-
-    Relationships:
-        - Triggered by: node_assemble_context (direct edge).
-        - Yields to: node_programmatic_audit (direct edge in graph.py).
-        - Uses: call_llm() with config.endpoints.drafter, stream=True.
-        - Calls: detect_slop(), resolve_slop() from core/antislop.py.
-        - Prompt: prompts/node_draft_prose.xml.j2
+    Outputs (merged into OrchestratorState):
+        current_draft_text: the antislop-resolved completed prose.
+        streaming_buffer: the raw assembled stream text.
     """
-    pass
+    start = time.monotonic()
+    pointer = state["fsm_pointer"]
+    config = load_config()
+    package = state["active_context_package"]
+
+    try:
+        prompt = PromptLoader().load_and_render("node_draft_prose", package)
+        messages = [{"role": "user", "content": prompt}]
+
+        chunks: list[str] = []
+        async for chunk in call_llm_module.call_llm(
+            config.endpoints.drafter,
+            messages,
+            temperature=0.7,
+            max_tokens=None,
+            stream=True,
+        ):
+            chunks.append(chunk)
+            stream_bus.publish({"type": "draft_chunk", "text": chunk})
+
+        raw_text = "".join(chunks)
+        flags = detect_slop(raw_text)
+        resolved = resolve_slop(raw_text, flags)
+        stream_bus.publish({"type": "draft_complete", "word_count": len(resolved.split())})
+
+        log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "success")
+        return {"current_draft_text": resolved, "streaming_buffer": raw_text}
+    except Exception as e:
+        log_node_event(
+            logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "failure", error=repr(e)
+        )
+        raise

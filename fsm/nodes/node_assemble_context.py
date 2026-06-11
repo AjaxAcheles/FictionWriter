@@ -1,72 +1,186 @@
 """
 fsm/nodes/node_assemble_context.py
 
-Context Assembly Node — Multi-Database Retrieval and Token-Budget Pruning.
+Retrieval Orchestrator — builds the active context package for drafting.
 
 Purpose:
-    The retrieval orchestrator. Executes parallel database queries across all four
-    persistent stores (SQLite B-Tree, Graphiti subgraph traversal, RAPTOR semantic
-    tree, ChromaDB HNSW) to build the context package that will be injected into
-    the prose generation prompt.
+    Model-free programmatic node. Executes live queries against SQLite
+    (relational), Graphiti (temporal subgraph), RAPTOR (hierarchical summaries),
+    and ChromaDB (HNSW flavor vectors), then applies drop-priority pruning so
+    the assembled payload fits the drafter endpoint's input token budget.
 
-    Applies drop-priority token pruning to fit the assembled context within the
-    active endpoint's context window. Drop order (lowest priority first):
-    1. ChromaDB HNSW flavor context (dropped first)
-    2. RAPTOR scene-level summaries
-    3. RAPTOR chapter-level summaries (retained last; arc summary always included)
+    Three-tier coreference confidence (Graphiti provisional links):
+    - confidence >= HIGH_CONFIDENCE (0.85): injected as absolute fact.
+    - confidence >= config.thresholds.coreference_confidence_floor: injected as
+      an Epistemic Belief, explicitly flagged as an unconfirmed assumption.
+    - below the floor: excluded entirely.
 
-    Token counting uses per-endpoint tokenizer routing (EndpointConfig.tokenizer_family):
-    - "tiktoken": cl100k_base encoding (OpenAI-compatible endpoints).
-    - "hf_auto": transformers.AutoTokenizer for HuggingFace-served models.
-    - "char_heuristic": character_count ÷ 4 as last-resort fallback.
-
-    Coreference confidence tiers when querying Graphiti:
-    - High confidence: injected as absolute fact.
-    - Mid confidence: injected as Epistemic Beliefs (explicitly flagged as unconfirmed).
-    - Low confidence: excluded entirely.
+    Drop-priority pruning order (lowest-value context dropped first):
+    1. HNSW flavor exemplars (hnsw_flavor)
+    2. RAPTOR scene-level summary (raptor_scene_summary)
+    After each drop the token budget is re-checked via fits_in_budget using the
+    drafter endpoint's tokenizer_family routing.
 
 Architecture role:
-    - Model-free programmatic node — no LLM calls. Pure DB queries and math.
-    - Overwrites active_context_package completely on each execution.
-    - From Sprint 3 onward, executes live queries against SQLite and Graphiti.
-      RAPTOR and Graphiti reads are never stubbed; they use real query methods
-      against persisted data stores from the moment this node is wired in.
-    - Emits a structured JSON log entry via get_logger("node_assemble_context").
+    - Triggered by node_plan_beat (or node_human_intervention after rollback).
+    - Yields to node_draft_prose; package keys match node_draft_prose.xml.j2.
+    - RAPTOR and Graphiti reads are live from Sprint 3 onward — the Graphiti
+      stub driver may return an empty subgraph, but the query is always issued.
 """
 
+import json
 import time
 
+from core import runtime
+from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
+from llm.tokenizer import fits_in_budget
+from memory import sqlite_db
+from memory.chroma_client import query_flavor_vectors
+from memory.graphiti_client import query_point_in_time_subgraph
+from memory.raptor import get_raptor_summaries
+from memory.style_store import get_author_style
 
 logger = get_logger("node_assemble_context")
+
+HIGH_CONFIDENCE = 0.85
+
+
+def partition_coreference_links(
+    edges: list[dict], confidence_floor: float
+) -> tuple[list[dict], list[dict]]:
+    """
+    Split Graphiti edges into (facts, epistemic_beliefs) via the three-tier system.
+
+    Inputs:
+        edges: edge dicts; each may carry a 'confidence' float (absent = 1.0,
+            i.e. a confirmed, non-provisional edge).
+        confidence_floor: config.thresholds.coreference_confidence_floor.
+
+    Outputs:
+        (facts, beliefs). Low-confidence edges are excluded entirely.
+    """
+    facts, beliefs = [], []
+    for edge in edges:
+        confidence = float(edge.get("confidence", 1.0))
+        if confidence >= HIGH_CONFIDENCE:
+            facts.append(edge)
+        elif confidence >= confidence_floor:
+            beliefs.append(edge)
+    return facts, beliefs
+
+
+def _edges_to_text(edges: list[dict]) -> str:
+    """Render edge dicts as one-fact-per-line prompt text."""
+    lines = []
+    for e in edges:
+        a = e.get("entity_a_id", "?")
+        b = e.get("entity_b_id", "?")
+        rel = e.get("edge_type", "related_to")
+        suffix = f" ({e['attributes']})" if e.get("attributes") else ""
+        lines.append(f"- {a} {rel} {b}{suffix}")
+    return "\n".join(lines)
+
+
+def _package_text(package: dict) -> str:
+    """Flatten the package for token counting."""
+    return "\n".join(str(v) for v in package.values())
 
 
 async def node_assemble_context(state: OrchestratorState) -> dict:
     """
-    Query all memory stores and build the token-budget-constrained context package.
+    Build and prune the active_context_package for the current beat.
 
-    Purpose:
-        Reads fsm_pointer to scope all DB queries to the current narrative position.
-        Executes queries against SQLite (characters, threads, PAD states, beat
-        constraints), Graphiti (temporal entity graph, coreference links),
-        RAPTOR (arc and chapter summaries), and ChromaDB (associative flavor vectors).
-        Assembles results into active_context_package and applies drop-priority
-        pruning until the payload fits within the endpoint's token budget.
-
-    Inputs (from OrchestratorState):
-        state['fsm_pointer']: FSM_Pointer — scopes all DB queries.
-        [Reads EndpointConfig.tokenizer_family from AppConfig for token counting]
-        [Queries: SQLite, Graphiti, RAPTOR, ChromaDB]
-
-    Outputs (dict merged into OrchestratorState):
-        active_context_package: Dict — overwrites the previous package completely.
-            Contains: beat_constraints, character_states, thread_statuses,
-            graphiti_facts, raptor_summaries, hnsw_flavor, epistemic_beliefs.
-
-    Relationships:
-        - Triggered by: node_plan_beat (direct edge), or node_human_intervention.
-        - Yields to: node_draft_prose (via direct edge in graph.py).
-        - No LLM calls. Pure computation and DB reads.
+    Outputs (merged into OrchestratorState):
+        active_context_package: dict keyed to the node_draft_prose template
+        variables, completely overwriting any previous package.
     """
-    pass
+    start = time.monotonic()
+    pointer = state["fsm_pointer"]
+    config = load_config()
+    db = runtime.SQLITE_PATH
+
+    try:
+        beat = sqlite_db.get_beat_by_index(db, pointer.scene_id, pointer.beat_index)
+        if beat is None:
+            raise RuntimeError(
+                f"node_assemble_context: no Beat at ({pointer.scene_id!r}, {pointer.beat_index})"
+            )
+        plan = json.loads(beat.get("beat_plan_json") or "{}")
+
+        # --- live store queries ------------------------------------------------
+        threads = sqlite_db.get_open_threads(db)
+        characters = sqlite_db.get_characters(db)
+        char_states = []
+        for char in characters:
+            history = sqlite_db.get_recent_character_emotions(db, char["char_id"], limit=1)
+            pad = (
+                {k: history[0][k] for k in ("pleasure", "arousal", "dominance")}
+                if history
+                else {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0}
+            )
+            char_states.append(
+                f"- {char['name']} ({char.get('role') or 'character'}): "
+                f"{char.get('description') or ''} PAD={json.dumps(pad)}"
+            )
+
+        edges = await query_point_in_time_subgraph(
+            entity_ids=[c["char_id"] for c in characters],
+            active_event_id=f"{pointer.scene_id}_beat_{pointer.beat_index}",
+        )
+        facts, beliefs = partition_coreference_links(
+            list(edges or []), config.thresholds.coreference_confidence_floor
+        )
+
+        summaries = get_raptor_summaries(
+            db, pointer.scene_id, levels=["arc", "chapter", "scene"]
+        )
+        try:
+            flavor = query_flavor_vectors(
+                plan.get("description") or "", n_results=3,
+                exclude_chapter_id=pointer.chapter_id,
+            )
+        except RuntimeError:
+            flavor = []  # Chroma not initialized (unit-test contexts) — flavor is optional
+        author_style = get_author_style(runtime.STYLES_DIR)
+
+        package = {
+            "beat_description": plan.get("description") or "",
+            "beat_entry_constraints": plan.get("entry_constraints") or "",
+            "beat_exit_constraints": plan.get("exit_constraints") or "",
+            "beat_word_budget": plan.get("word_budget") or 0,
+            "pad_behavioral_constraints": plan.get("pad_constraint") or "",
+            "character_states": "\n".join(char_states),
+            "thread_statuses": "\n".join(
+                f"- {t['name']} (priority {t['priority']}): {t.get('description') or ''}"
+                for t in threads
+            ),
+            "graphiti_facts": _edges_to_text(facts),
+            "epistemic_beliefs": _edges_to_text(beliefs),
+            "raptor_arc_summary": summaries.get("arc", ""),
+            "raptor_chapter_summary": summaries.get("chapter", ""),
+            "raptor_scene_summary": summaries.get("scene", ""),
+            "hnsw_flavor": "\n---\n".join(f.get("text", "") for f in flavor),
+            "author_style_baseline": json.dumps(author_style.get("frozen_baseline") or {}),
+        }
+
+        # --- drop-priority pruning ---------------------------------------------
+        endpoint = config.endpoints.drafter
+        for drop_key in ("hnsw_flavor", "raptor_scene_summary"):
+            if fits_in_budget(
+                _package_text(package),
+                endpoint.context_window,
+                endpoint.reserved_output_tokens,
+                endpoint.tokenizer_family,
+                endpoint.model_name,
+            ):
+                break
+            package[drop_key] = ""
+            logger.info("drop-priority pruning: dropped %s", drop_key)
+
+        log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "ok")
+        return {"active_context_package": package}
+    except Exception as e:
+        log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "error", error=repr(e))
+        raise

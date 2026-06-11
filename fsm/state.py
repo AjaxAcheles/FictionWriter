@@ -25,11 +25,26 @@ Architecture role:
       node_adversarial_critics; consumed by node_revise_prose and edge_mode_selector.
 """
 
-import operator
 from typing import Annotated, Dict, List, Optional
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
+
+
+def append_or_clear(existing: Optional[list], update: Optional[list]) -> list:
+    """
+    LangGraph reducer: append list updates; treat None as an explicit clear.
+
+    Purpose:
+        critic_failures and failed_beat_cache accumulate across critic nodes
+        (append semantics, like operator.add), but node_revise_prose and
+        node_commit_transaction must CLEAR them — impossible with a pure concat
+        reducer. Returning None for the key signals an explicit clear; returning
+        a list appends it to the existing value.
+    """
+    if update is None:
+        return []
+    return (existing or []) + update
 
 
 class FSM_Pointer(BaseModel):
@@ -139,6 +154,13 @@ class OrchestratorState(TypedDict):
             node_human_intervention checks this flag to unlock the UI editor.
         hard_stop_asserted: Set True when the user clicks Hard Stop. The FSM halts
             at the next safe boundary and does not resume automatically.
+        best_seen_draft: In-memory recovery payload for the headless terminal
+            policy. Updated by node_programmatic_audit whenever the current draft
+            has fewer failures than the stored one (or the field is None). Never
+            written to SQLite. Reset to None by node_commit_transaction.
+        best_seen_failure_count: Failure count of the stored best_seen_draft —
+            the comparison operand for the fewest-failures rule. In-memory only.
+            Reset to None by node_commit_transaction.
         failed_beat_cache: Scene-scoped list of failure fingerprint dicts for
             node_freeze_and_escalate autonomous recovery. Includes THREAD_PARADOX
             fingerprints. Preserved across retry_count resets (Tier 4). Stores
@@ -151,7 +173,7 @@ class OrchestratorState(TypedDict):
     active_context_package: Dict
     current_draft_text: str
     streaming_buffer: str
-    critic_failures: Annotated[List[FailureObject], operator.add]
+    critic_failures: Annotated[List[FailureObject], append_or_clear]
     stylometric_distance: float
     retry_count: int
     replan_count: int
@@ -160,4 +182,6 @@ class OrchestratorState(TypedDict):
     transient_dc_override: Optional[float]
     pause_requested: bool
     hard_stop_asserted: bool
-    failed_beat_cache: Annotated[List[Dict], operator.add]
+    failed_beat_cache: Annotated[List[Dict], append_or_clear]
+    best_seen_draft: Optional[str]
+    best_seen_failure_count: Optional[int]

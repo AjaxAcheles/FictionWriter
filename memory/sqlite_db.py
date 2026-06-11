@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS Scenes (
     scene_id        TEXT PRIMARY KEY,
     chapter_id      TEXT NOT NULL REFERENCES Chapters(chapter_id),
     scene_index     INTEGER NOT NULL,
+    description     TEXT,
+    word_budget     INTEGER NOT NULL DEFAULT 0,
     prose_text      TEXT,
     word_count      INTEGER NOT NULL DEFAULT 0,
     committed_at    TEXT
@@ -140,6 +142,16 @@ def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_SCHEMA_SQL)
+        # Sprint 3 additive migration: Scenes gained description + word_budget.
+        # CREATE TABLE IF NOT EXISTS does not alter existing tables, so dev DBs
+        # created before Sprint 3 are patched in place (idempotent).
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(Scenes)")}
+        if "description" not in existing:
+            conn.execute("ALTER TABLE Scenes ADD COLUMN description TEXT")
+        if "word_budget" not in existing:
+            conn.execute(
+                "ALTER TABLE Scenes ADD COLUMN word_budget INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
@@ -378,3 +390,191 @@ def get_total_word_count(db_path: Path) -> int:
             "SELECT COALESCE(SUM(word_count), 0) FROM Scenes WHERE committed_at IS NOT NULL"
         ).fetchone()
     return int(row[0])
+
+
+# --------------------------------------------------------------------------- #
+# Sprint 3 helpers — consumed by the FSM vertical slice                       #
+# --------------------------------------------------------------------------- #
+
+
+def get_row(db_path: Path, table: str, key_column: str, key_value: str) -> dict | None:
+    """
+    Fetch one row by primary key from an allowlisted table.
+
+    Purpose:
+        Shared single-row accessor for nodes (active Scene, Beat, Chapter, Arc).
+        The table/column names are validated against an allowlist — they are
+        interpolated into SQL and must never come from user input.
+
+    Outputs:
+        dict for the row, or None when absent.
+    """
+    allowed = {
+        ("Arcs", "arc_id"),
+        ("Chapters", "chapter_id"),
+        ("Scenes", "scene_id"),
+        ("Beats", "beat_id"),
+        ("Threads", "thread_id"),
+        ("Characters", "char_id"),
+    }
+    if (table, key_column) not in allowed:
+        raise ValueError(f"get_row: table/column not allowlisted: {table}.{key_column}")
+    with closing(get_connection(db_path)) as conn:
+        row = conn.execute(
+            f"SELECT * FROM {table} WHERE {key_column} = ?", (key_value,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_beat_by_index(db_path: Path, scene_id: str, beat_index: int) -> dict | None:
+    """Fetch the Beat row at (scene_id, beat_index). None when not yet planned."""
+    with closing(get_connection(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM Beats WHERE scene_id = ? AND beat_index = ?",
+            (scene_id, beat_index),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_planned_beats(db_path: Path, scene_id: str) -> list[dict]:
+    """All Beat rows for a scene with status='planned', ordered by beat_index ASC."""
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM Beats WHERE scene_id = ? AND status = 'planned' "
+            "ORDER BY beat_index ASC",
+            (scene_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_committed_beat_count(db_path: Path, scene_id: str) -> int:
+    """Number of committed beats in a scene (scene-advancement guard input)."""
+    with closing(get_connection(db_path)) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM Beats WHERE scene_id = ? AND status = 'committed'",
+            (scene_id,),
+        ).fetchone()
+    return int(row[0])
+
+
+def get_open_threads(db_path: Path) -> list[dict]:
+    """All Threads rows with status='open', ordered by priority DESC."""
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM Threads WHERE status = 'open' ORDER BY priority DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_characters(db_path: Path) -> list[dict]:
+    """All Characters rows."""
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute("SELECT * FROM Characters").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_character_emotions(db_path: Path, char_id: str, limit: int = 8) -> list[dict]:
+    """
+    Most recent PAD rows for one character, newest first.
+
+    Purpose:
+        Input series for the EWMA PAD calculation in node_plan_beat. The newest
+        row is the character's current state; older rows weight the average.
+    """
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM CharacterEmotions WHERE char_id = ? "
+            "ORDER BY recorded_at DESC, id DESC LIMIT ?",
+            (char_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_commit_intent(db_path: Path, beat_id: str) -> int:
+    """
+    Step 1 of the commit sequence: write a status='pending' CommitIntent row.
+
+    Outputs:
+        int: the new intent_id (used to flip the row to 'committed' in step 5).
+    """
+    created_at = datetime.now(timezone.utc).isoformat()
+    with closing(get_connection(db_path)) as conn:
+        cursor = conn.execute(
+            "INSERT INTO CommitIntent (beat_id, status, created_at) "
+            "VALUES (?, 'pending', ?)",
+            (beat_id, created_at),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def mark_commit_intent_committed(db_path: Path, intent_id: int) -> None:
+    """Step 5 of the commit sequence: flip the CommitIntent row to 'committed'."""
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            "UPDATE CommitIntent SET status = 'committed' WHERE intent_id = ?",
+            (intent_id,),
+        )
+        conn.commit()
+
+
+def append_scene_prose(db_path: Path, scene_id: str, prose: str, word_count_delta: int) -> None:
+    """
+    Append committed beat prose to the scene and bump its word count (idempotent
+    callers guard against double-append via Beat.status).
+    """
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            "UPDATE Scenes SET "
+            "prose_text = COALESCE(prose_text, '') || ?, "
+            "word_count = word_count + ? "
+            "WHERE scene_id = ?",
+            (("\n\n" + prose) if prose else "", word_count_delta, scene_id),
+        )
+        conn.commit()
+
+
+def close_scene(db_path: Path, scene_id: str) -> None:
+    """Stamp committed_at on a scene — the scene-advancement guard's close action."""
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            "UPDATE Scenes SET committed_at = ? WHERE scene_id = ? AND committed_at IS NULL",
+            (datetime.now(timezone.utc).isoformat(), scene_id),
+        )
+        conn.commit()
+
+
+def set_chapter_status(db_path: Path, chapter_id: str, status: str) -> None:
+    """Update a chapter's status ('planned' | 'active' | 'completed')."""
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            "UPDATE Chapters SET status = ? WHERE chapter_id = ?", (status, chapter_id)
+        )
+        conn.commit()
+
+
+def get_scene_texts_for_chapter(db_path: Path, chapter_id: str) -> list[str]:
+    """Committed scene prose texts for a chapter, ordered by scene_index ASC."""
+    with closing(get_connection(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT prose_text FROM Scenes WHERE chapter_id = ? "
+            "AND committed_at IS NOT NULL ORDER BY scene_index ASC",
+            (chapter_id,),
+        ).fetchall()
+    return [r[0] or "" for r in rows]
+
+
+def insert_row(db_path: Path, table: str, data: dict) -> None:
+    """
+    Idempotent INSERT OR IGNORE into an allowlisted table (planner seeding).
+    """
+    allowed = {"Arcs", "Chapters", "Scenes", "Threads", "Characters"}
+    if table not in allowed:
+        raise ValueError(f"insert_row: table not allowlisted: {table}")
+    columns = ", ".join(data.keys())
+    placeholders = ", ".join(f":{k}" for k in data)
+    with closing(get_connection(db_path)) as conn:
+        conn.execute(
+            f"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})", data
+        )
+        conn.commit()

@@ -37,27 +37,31 @@ from fsm.state import OrchestratorState
 
 def edge_mode_selector(state: OrchestratorState) -> str:
     """
-    Evaluate draft health and return the next node name.
+    Route after node_adversarial_critics — strict first-match-wins ordering.
 
-    Purpose:
-        Implements the five-branch routing decision described in the module
-        docstring. All threshold comparisons use config values read from
-        AppConfig.thresholds (stel_cosine_distance, retry_count_max,
-        craft_consultant_threshold). transient_dc_override from state supersedes
-        the config Dc threshold when set (Tier 1 relaxation active).
-
-    Inputs:
-        state['has_paradox']: bool — if True, bypass all other checks and escalate.
-        state['critic_failures']: List[FailureObject] — empty = clean draft.
-        state['stylometric_distance']: float — STEL cosine Dc (stubbed 0.0 Sprint 1–4).
-        state['transient_dc_override']: float | None — Tier 1 relaxed threshold.
-        state['retry_count']: int — number of revision attempts this beat.
-
-    Outputs:
-        str: One of:
-            "node_commit_transaction"   — clean draft, commit it.
-            "node_revise_prose"         — failures present, retry_count within budget.
-            "node_craft_consultant"     — deadlock threshold exceeded (retry > 3).
-            "node_freeze_and_escalate"  — paradox detected or retry budget exhausted.
+    0. has_paradox → "node_freeze_and_escalate" (structural; bypasses retry gate).
+    1. no failures AND Dc < threshold → "node_commit_transaction"
+       (threshold = transient_dc_override when set, else config Dc).
+    2. retry_count > generation.retry_count_max (5) → "node_freeze_and_escalate".
+    3. retry_count > generation.craft_consultant_threshold (3) → "node_craft_consultant".
+    4. else → "node_revise_prose".
     """
-    pass
+    from core.config_loader import load_config
+
+    config = load_config()
+
+    if state.get("has_paradox"):
+        return "node_freeze_and_escalate"
+
+    override = state.get("transient_dc_override")
+    threshold = override if override is not None else config.thresholds.stel_cosine_distance
+    failures = state.get("critic_failures") or []
+    if not failures and state.get("stylometric_distance", 0.0) < threshold:
+        return "node_commit_transaction"
+
+    retry_count = state.get("retry_count", 0)
+    if retry_count > config.generation.retry_count_max:
+        return "node_freeze_and_escalate"
+    if retry_count > config.generation.craft_consultant_threshold:
+        return "node_craft_consultant"
+    return "node_revise_prose"

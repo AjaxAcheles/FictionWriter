@@ -54,4 +54,17 @@ def edge_programmatic_router(state: OrchestratorState) -> str:
             "node_commit_transaction" — fast path; draft is clearly clean.
             "node_adversarial_critics" — standard path; run the critic committee.
     """
-    pass
+    from core.config_loader import load_config
+
+    config = load_config()
+    override = state.get("transient_dc_override")
+    base_threshold = override if override is not None else config.thresholds.stel_cosine_distance
+    fast_gate = base_threshold * config.thresholds.programmatic_fast_path_multiplier
+
+    if (
+        state.get("retry_count", 0) == 0
+        and not (state.get("critic_failures") or [])
+        and state.get("stylometric_distance", 1.0) < fast_gate
+    ):
+        return "node_commit_transaction"
+    return "node_adversarial_critics"

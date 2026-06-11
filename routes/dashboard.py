@@ -38,11 +38,9 @@ import json
 
 from quart import Blueprint, Response, render_template, request
 
-dashboard_bp = Blueprint("dashboard", __name__)
+from core import stream_bus
 
-# Module-level queue shared by FSM nodes (push) and /stream (consume).
-# asyncio.Queue() is loop-agnostic in Python 3.10+ — safe to create here.
-sse_queue: asyncio.Queue = asyncio.Queue()
+dashboard_bp = Blueprint("dashboard", __name__)
 
 
 @dashboard_bp.route("/")
@@ -86,12 +84,16 @@ async def stream():
         event: {event_type}\\ndata: {json_payload}\\n\\n
     """
     async def event_generator():
-        while True:
-            try:
-                event = await asyncio.wait_for(sse_queue.get(), timeout=15.0)
-                yield f"event: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
-            except asyncio.TimeoutError:
-                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        subscriber_id, queue = stream_bus.subscribe()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            stream_bus.unsubscribe(subscriber_id)
 
     return Response(event_generator(), content_type="text/event-stream")
 
@@ -116,3 +118,4 @@ async def generate():
         HTTP 202 Accepted.
     """
     return {"status": "started", "project_id": "default"}, 202
+

@@ -7,7 +7,7 @@
     constraint satisfaction. The pacing critic is the beat's structural auditor —
     it verifies the beat actually accomplishes what the beat plan requires.
 
-    Output is grammar-constrained to a JSON array of FailureObject dicts.
+    Output is grammar-constrained to a SINGLE FailureObject JSON object.
     critic_source must be "pacing" for all entries.
 
   Jinja2 Variables:
@@ -20,21 +20,21 @@
     {{ raptor_chapter_summary }} str  — Prior chapter RAPTOR summary for macro pacing context.
 
   Output schema (grammar-constrained):
-    JSON array of FailureObject dicts:
-    [{
+    One FailureObject JSON object:
+    {
       "error_code": "PACING_ISSUE",
       "offending_text": "<verbatim short substring>",
       "suggested_fix": "<correction instruction>",
       "critic_source": "pacing"
-    }]
-    Empty array [] if no issues found.
+    }
+    If no issues are found, emit error_code "NONE" with empty offending_text/suggested_fix.
 #}
 
 <prompt>
   <system>
     You are a narrative pacing editor. Evaluate whether the draft beat achieves its
     planned entry/exit states and maintains appropriate scene rhythm. Output a JSON
-    array of FailureObject dicts only. Empty array if no issues found.
+    array of FailureObject dicts only. If the draft is clean, set error_code to "NONE".
   </system>
 
   <beat_plan>

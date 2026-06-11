@@ -43,7 +43,7 @@ from fsm.nodes.node_revise_prose import node_revise_prose
 from fsm.nodes.node_commit_transaction import node_commit_transaction
 from fsm.nodes.node_compress_memory import node_compress_memory
 from fsm.nodes.node_craft_consultant import node_craft_consultant
-from fsm.nodes.node_freeze_and_escalate import node_freeze_and_escalate
+from fsm.nodes.node_freeze_and_escalate import node_freeze_and_escalate, freeze_router
 from fsm.nodes.node_human_intervention import node_human_intervention
 from fsm.routers.edge_mode_selector import edge_mode_selector
 from fsm.routers.edge_commit_router import edge_commit_router
@@ -85,4 +85,83 @@ def compile_graph():
         with an initial OrchestratorState dict to run the FSM synchronously,
         or .astream() to run it asynchronously and yield state deltas.
     """
-    pass
+    graph = StateGraph(OrchestratorState)
+
+    graph.add_node("node_plan_global", node_plan_global)
+    graph.add_node("node_plan_arc", node_plan_arc)
+    graph.add_node("node_plan_chapter", node_plan_chapter)
+    graph.add_node("node_plan_beat", node_plan_beat)
+    graph.add_node("node_assemble_context", node_assemble_context)
+    graph.add_node("node_draft_prose", node_draft_prose)
+    graph.add_node("node_programmatic_audit", node_programmatic_audit)
+    graph.add_node("node_adversarial_critics", node_adversarial_critics)
+    graph.add_node("node_revise_prose", node_revise_prose)
+    graph.add_node("node_commit_transaction", node_commit_transaction)
+    graph.add_node("node_compress_memory", node_compress_memory)
+    graph.add_node("node_craft_consultant", node_craft_consultant)
+    graph.add_node("node_freeze_and_escalate", node_freeze_and_escalate)
+    graph.add_node("node_human_intervention", node_human_intervention)
+
+    # Planning cascade
+    graph.add_edge(START, "node_plan_global")
+    graph.add_edge("node_plan_global", "node_plan_arc")
+    graph.add_edge("node_plan_arc", "node_plan_chapter")
+    graph.add_edge("node_plan_chapter", "node_plan_beat")
+    graph.add_edge("node_plan_beat", "node_assemble_context")
+    graph.add_edge("node_assemble_context", "node_draft_prose")
+    graph.add_edge("node_draft_prose", "node_programmatic_audit")
+
+    # Stage 1 fast-path bypass
+    graph.add_conditional_edges(
+        "node_programmatic_audit",
+        edge_programmatic_router,
+        {
+            "node_commit_transaction": "node_commit_transaction",
+            "node_adversarial_critics": "node_adversarial_critics",
+        },
+    )
+
+    # Stage 2 quality gate
+    graph.add_conditional_edges(
+        "node_adversarial_critics",
+        edge_mode_selector,
+        {
+            "node_commit_transaction": "node_commit_transaction",
+            "node_revise_prose": "node_revise_prose",
+            "node_craft_consultant": "node_craft_consultant",
+            "node_freeze_and_escalate": "node_freeze_and_escalate",
+        },
+    )
+
+    # Revision loop
+    graph.add_edge("node_revise_prose", "node_programmatic_audit")
+    graph.add_edge("node_craft_consultant", "node_revise_prose")
+
+    # Fallback subgraph routing (Sprint 3 subset: Tier 1 → revise; re-entry → human)
+    graph.add_conditional_edges(
+        "node_freeze_and_escalate",
+        freeze_router,
+        {
+            "node_revise_prose": "node_revise_prose",
+            "node_human_intervention": "node_human_intervention",
+        },
+    )
+
+    # Commit advancement (dynamic relational routing)
+    graph.add_conditional_edges(
+        "node_commit_transaction",
+        edge_commit_router,
+        {
+            "node_plan_beat": "node_plan_beat",
+            "node_plan_chapter": "node_plan_chapter",
+            "node_plan_global": "node_plan_global",
+            "END": END,
+        },
+    )
+
+    # node_compress_memory is invoked synchronously inside node_commit_transaction
+    # at chapter boundaries; its graph edge exists for Sprint 4 wiring parity.
+    graph.add_edge("node_compress_memory", "node_plan_chapter")
+    graph.add_edge("node_human_intervention", "node_programmatic_audit")
+
+    return graph.compile()

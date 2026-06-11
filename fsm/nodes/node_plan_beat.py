@@ -11,7 +11,7 @@ Purpose:
     Executes the PAD Grounded Translation Pipeline sequentially:
     1. Calculate raw PAD coordinates (EWMA with alpha from config.thresholds.ewma_alpha).
     2. Look up the deterministic baseline behavioral constraint string from a static
-       JSON dictionary keyed by PAD region (e.g., "high_arousal_low_dominance").
+       JSON dictionary keyed by PAD region (prompts/pad_regions.json).
     3. Send that baseline string + scene intent to a fast small-tier LLM
        (config.endpoints.pad_translator) to adapt constraints to narrative context.
     4. Write the tailored constraint string into the Beat row in SQLite.
@@ -19,64 +19,295 @@ Purpose:
     Error path for step 3: if the LLM call fails (timeout, garbage output, or two
     consecutive failures after one retry), the pipeline falls back to the raw
     static-JSON baseline string. Planning continues unblocked. Fallback is logged
-    at WARNING level.
+    at WARNING level. Steps 1, 2, and 4 always execute.
 
     Config read policy: reads config.yaml at node entry. Settings-page slider changes
     (Dc threshold, EWMA alpha) take effect at the next beat boundary.
 
-    Scene advancement guard: the node does not advance the scene pointer simply when
-    beat_index == len(planned_beats). It evaluates scene_needs_more jointly:
-    (1) committed word count < scene word_budget AND (2) beats_per_scene_min met.
-    Only when scene_needs_more is False does the scene pointer advance.
+    Scene advancement guard: the scene is closed by node_commit_transaction only when
+    BOTH (committed word count >= scene word_budget) AND (committed beats >=
+    beats_per_scene_min). This node extends an open scene with additional beats when
+    re-entered after all planned beats commit but the guard says the scene needs more.
 
 Architecture role:
     - Lowest tier of the planning cascade; directly precedes context assembly.
-    - Uses: config.endpoints.pad_translator for PAD translation step 3.
+    - Uses: config.endpoints.planner for beat partitioning (steps 1-2 prompt) and
+      config.endpoints.pad_translator for PAD translation step 3.
     - Loads prompts: prompts/node_plan_beat.xml.j2 and prompts/node_plan_beat_pad.xml.j2.
     - Emits a structured JSON log entry via get_logger("node_plan_beat").
 """
 
+import json
 import time
+from pathlib import Path
+from typing import List, Optional
 
+from pydantic import BaseModel, ConfigDict
+
+from core import runtime
+from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
+from llm import call_llm as call_llm_module
+from memory import sqlite_db
 from prompts.prompt_loader import PromptLoader
 
 logger = get_logger("node_plan_beat")
+
+PAD_REGIONS_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "pad_regions.json"
+
+
+class PlannedBeat(BaseModel):
+    """One beat partition as returned by the planner LLM."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    scene_id: str
+    beat_index: int
+    description: str
+    word_budget: int
+    entry_constraints: str
+    exit_constraints: str
+    raw_pad_targets: dict = {}
+    pad_region: Optional[str] = None
+    status: str = "planned"
+
+
+class BeatPlanList(BaseModel):
+    """Top-level planner output schema: {'beats': [...]}."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    beats: List[PlannedBeat]
+
+
+def load_pad_regions() -> dict:
+    """Load the static PAD region lookup dictionary (step 2 source of truth)."""
+    with PAD_REGIONS_PATH.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    return {k: v for k, v in data.items() if not k.startswith("_")}
+
+
+def pad_region_key(pleasure: float, arousal: float, dominance: float) -> str:
+    """
+    Deterministic PAD octant key for the static lookup dictionary.
+
+    Each axis maps to 'high' when its EWMA coordinate >= 0.0, else 'low'.
+    Identical coordinates always produce the identical key — step 2 of the
+    pipeline is fully deterministic.
+    """
+    p = "high" if pleasure >= 0.0 else "low"
+    a = "high" if arousal >= 0.0 else "low"
+    d = "high" if dominance >= 0.0 else "low"
+    return f"{p}_pleasure_{a}_arousal_{d}_dominance"
+
+
+def ewma_pad(emotion_rows: list[dict], alpha: float) -> dict:
+    """
+    EWMA over a character's PAD history (newest row first).
+
+    Purpose:
+        Computes the smoothed current PAD coordinate used for region lookup.
+        EWMA is applied oldest -> newest so the newest row carries weight alpha:
+        s = alpha * x_t + (1 - alpha) * s_{t-1}.
+
+    Outputs:
+        {'pleasure': float, 'arousal': float, 'dominance': float} — neutral
+        origin (0,0,0) when the character has no recorded history.
+    """
+    if not emotion_rows:
+        return {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0}
+    ordered = list(reversed(emotion_rows))  # oldest first
+    state = {k: float(ordered[0][k]) for k in ("pleasure", "arousal", "dominance")}
+    for row in ordered[1:]:
+        for k in state:
+            state[k] = alpha * float(row[k]) + (1.0 - alpha) * state[k]
+    return state
+
+
+async def _translate_pad_constraint(
+    config,
+    loader: PromptLoader,
+    character_name: str,
+    region_key: str,
+    baseline: str,
+    scene_intent: str,
+    beat_description: str,
+) -> str:
+    """
+    PAD pipeline step 3 — best-effort LLM adaptation with retry-once fallback.
+
+    Two consecutive failures (one retry) fall back to the raw static baseline
+    string, logged at WARNING. Garbage output (empty/whitespace) counts as a
+    failure. Never raises.
+    """
+    prompt = loader.load_and_render(
+        "node_plan_beat_pad",
+        {
+            "raw_baseline_constraint": baseline,
+            "pad_region": region_key,
+            "scene_intent": scene_intent,
+            "character_name": character_name,
+            "beat_description": beat_description,
+        },
+    )
+    messages = [{"role": "user", "content": prompt}]
+    for attempt in range(2):
+        try:
+            text = await call_llm_module.collect_llm_response(
+                config.endpoints.pad_translator, messages, temperature=0.4, stream=False
+            )
+            if text and text.strip():
+                return text.strip()
+        except Exception as e:  # noqa: BLE001 — step 3 is best-effort by contract
+            logger.warning(
+                "PAD translation attempt %d failed for %s: %r", attempt + 1, character_name, e
+            )
+    logger.warning(
+        "PAD translation fell back to static baseline for %s (region=%s).",
+        character_name,
+        region_key,
+    )
+    return baseline
+
+
+def _scene_entry_context(db: Path, scene_id: str) -> str:
+    """Last committed scene's closing prose — what just happened before this scene."""
+    from contextlib import closing
+
+    scene = sqlite_db.get_row(db, "Scenes", "scene_id", scene_id)
+    if scene is None:
+        return ""
+    with closing(sqlite_db.get_connection(db)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM Scenes WHERE chapter_id = ? AND committed_at IS NOT NULL "
+            "AND scene_index < ? ORDER BY scene_index DESC LIMIT 1",
+            (scene["chapter_id"], scene["scene_index"]),
+        ).fetchall()
+    if not rows:
+        return ""
+    return (dict(rows[0]).get("prose_text") or "")[-500:]
 
 
 async def node_plan_beat(state: OrchestratorState) -> dict:
     """
     Partition the active scene into beats and execute the PAD Translation Pipeline.
 
-    Purpose:
-        Reads the active Scene row and current CharacterEmotions PAD states from
-        SQLite. Generates beat partitions with entry/exit constraints and word budgets.
-        Runs the four-step PAD Grounded Translation Pipeline to produce tailored
-        behavioral constraint strings. Writes Beat rows to SQLite including the
-        final PAD constraint string for injection by node_assemble_context.
+    Behavior:
+        - If planned (uncommitted) beats already exist for the active scene, the
+          pointer simply advances to the lowest planned beat_index — no replanning.
+        - Otherwise the planner endpoint partitions the scene (extending it when
+          the scene-advancement guard kept it open), the PAD pipeline runs for the
+          scene's characters, and Beat rows are written to SQLite.
 
-        Re-reads config.yaml at node entry so that Settings-page slider changes
-        (stel_cosine_distance, ewma_alpha, beats_per_scene_min) take effect at
-        the next beat boundary without a server restart.
-
-    Inputs (from OrchestratorState):
-        state['fsm_pointer']: FSM_Pointer — scene_id used to fetch active Scene row.
-        [Reads from SQLite: active Scene row, CharacterEmotions PAD states,
-         PAD region lookup JSON]
-        [Reads from config.yaml: ewma_alpha, beats_per_scene_min]
-
-    Outputs (dict merged into OrchestratorState):
-        fsm_pointer: Updated with beat_index = 0 (or next beat_index if looping).
-        [Side effects: Writes Beat rows to SQLite Beats table including tailored
-         PAD behavioral constraint strings. Updates Scene status to 'active'.]
-
-    Relationships:
-        - Triggered by: node_plan_chapter (direct edge), node_commit_transaction
-          (when more beats remain in current scene), or node_freeze_and_escalate
-          (Tier 4, replan_count <= 2).
-        - Yields to: node_assemble_context (via direct edge in graph.py).
-        - Uses: call_llm() with config.endpoints.pad_translator (PAD step 3).
-        - Prompts: prompts/node_plan_beat.xml.j2, prompts/node_plan_beat_pad.xml.j2
+    Outputs (merged into OrchestratorState):
+        fsm_pointer: beat_index set to the next beat to draft.
     """
-    pass
+    start = time.monotonic()
+    pointer = state["fsm_pointer"]
+    config = load_config()  # node-entry re-read: Settings changes apply at beat boundary
+    db = runtime.SQLITE_PATH
+
+    try:
+        planned = sqlite_db.get_planned_beats(db, pointer.scene_id)
+        if planned:
+            next_index = planned[0]["beat_index"]
+            updated = pointer.model_copy(update={"beat_index": next_index})
+            log_node_event(logger, updated.model_dump(), (time.monotonic() - start) * 1000.0, "success")
+            return {"fsm_pointer": updated}
+
+        scene = sqlite_db.get_row(db, "Scenes", "scene_id", pointer.scene_id)
+        if scene is None:
+            raise RuntimeError(f"node_plan_beat: active scene {pointer.scene_id!r} not found")
+
+        loader = PromptLoader()
+        characters = sqlite_db.get_characters(db)
+        alpha = config.thresholds.ewma_alpha
+
+        pad_states = {}
+        for char in characters:
+            history = sqlite_db.get_recent_character_emotions(db, char["char_id"])
+            pad_states[char["char_id"]] = ewma_pad(history, alpha)
+
+        existing_count = sqlite_db.get_committed_beat_count(db, pointer.scene_id)
+        prompt = loader.load_and_render(
+            "node_plan_beat",
+            {
+                "scene_id": pointer.scene_id,
+                "scene_description": scene.get("description") or "",
+                "scene_word_budget": scene.get("word_budget") or 0,
+                "beats_per_scene_min": config.thresholds.beats_per_scene_min,
+                "character_pad_states": json.dumps(pad_states),
+                "ewma_alpha": alpha,
+                "scene_entry_context": _scene_entry_context(db, pointer.scene_id),
+            },
+        )
+        plan = await call_llm_module.call_llm_structured(
+            config.endpoints.planner,
+            [{"role": "user", "content": prompt}],
+            BeatPlanList,
+            retry_cap=config.model_validate_retry_cap,
+        )
+
+        regions = load_pad_regions()
+        scene_intent = scene.get("description") or ""
+        char_names = {c["char_id"]: c["name"] for c in characters}
+
+        first_new_index = None
+        for offset, beat in enumerate(plan.beats):
+            beat_index = existing_count + offset
+            # Step 1 (deterministic recompute): EWMA toward the planner's raw targets.
+            pad_constraints: list[str] = []
+            for char_id, current in pad_states.items():
+                target = beat.raw_pad_targets.get(char_id) or current
+                projected = {
+                    k: alpha * float(target.get(k, current[k])) + (1.0 - alpha) * current[k]
+                    for k in ("pleasure", "arousal", "dominance")
+                }
+                # Step 2: deterministic static lookup (LLM pad_region is advisory only).
+                region = pad_region_key(**projected)
+                baseline = regions.get(beat.pad_region or "") or regions[region]
+                # Step 3: best-effort adaptation with static fallback.
+                tailored = await _translate_pad_constraint(
+                    config,
+                    loader,
+                    char_names.get(char_id, char_id),
+                    region,
+                    baseline,
+                    scene_intent,
+                    beat.description,
+                )
+                pad_constraints.append(tailored)
+                pad_states[char_id] = projected
+
+            # Step 4: persist the Beat row with the tailored constraint string.
+            beat_id = f"{pointer.scene_id}_beat_{beat_index}"
+            sqlite_db.upsert_beat(
+                db,
+                {
+                    "beat_id": beat_id,
+                    "scene_id": pointer.scene_id,
+                    "beat_index": beat_index,
+                    "beat_plan_json": json.dumps(
+                        {
+                            "description": beat.description,
+                            "word_budget": beat.word_budget,
+                            "entry_constraints": beat.entry_constraints,
+                            "exit_constraints": beat.exit_constraints,
+                            "raw_pad_targets": beat.raw_pad_targets,
+                            "pad_constraint": "\n".join(pad_constraints),
+                        }
+                    ),
+                    "status": "planned",
+                },
+            )
+            if first_new_index is None:
+                first_new_index = beat_index
+
+        updated = pointer.model_copy(update={"beat_index": first_new_index or 0})
+        log_node_event(logger, updated.model_dump(), (time.monotonic() - start) * 1000.0, "success")
+        return {"fsm_pointer": updated}
+    except Exception as e:
+        log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "failure", error=repr(e))
+        raise

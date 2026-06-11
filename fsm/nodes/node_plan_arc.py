@@ -1,57 +1,55 @@
 """
 fsm/nodes/node_plan_arc.py
 
-Level 2 Planning Node — Arc-to-Act Expander.
+Level 2 Planning Node — Arc Planner. SPRINT 3 SEEDING STUB.
 
-Purpose:
-    Expands one structural arc from the global plan into act-level milestones.
-    Evaluates the Threads priority queue to determine which subplots need to
-    open, escalate, or close within this arc. Writes Chapter stub rows to SQLite.
+Purpose (full version — Sprint 4):
+    Expands the global plan into multi-chapter acts, evaluating which subplot
+    threads open, progress, or close, using the planner endpoint.
 
-    Invoked at arc boundaries: once after node_plan_global for the first arc,
-    and again by edge_commit_router whenever the FSM advances past an arc boundary.
-
-Architecture role:
-    - Second tier of the hierarchical planning cascade (Global → Arc → Chapter → Beat).
-    - Reads the RAPTOR root summary for macro-level narrative context.
-    - Uses the high-tier (large) inference endpoint (config.endpoints.planner).
-    - Loads prompt from: prompts/node_plan_arc.xml.j2 via PromptLoader.
-    - Emits a structured JSON log entry via get_logger("node_plan_arc").
+Sprint 3 behavior:
+    Seeds one default Chapter row under the active arc when the arc has no
+    chapters (idempotent), and points fsm_pointer.chapter_id at the first
+    incomplete chapter.
 """
 
 import time
+from datetime import datetime, timezone
 
+from core import runtime
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
-from prompts.prompt_loader import PromptLoader
+from memory import sqlite_db
 
 logger = get_logger("node_plan_arc")
 
 
 async def node_plan_arc(state: OrchestratorState) -> dict:
-    """
-    Expand the active arc into chapter milestones and write Chapter stubs to SQLite.
-
-    Purpose:
-        Reads the active Arc row and the Threads table priority queue from SQLite,
-        plus the RAPTOR root summary for macro-level context. Generates the act
-        structure for the current arc, tagging which Threads open, progress, or
-        close. Writes Chapter stub rows to SQLite Chapters table with status='planned'.
-        Updates fsm_pointer.arc_id.
-
-    Inputs (from OrchestratorState):
-        state['fsm_pointer']: FSM_Pointer — arc_id used to fetch the active Arc row.
-        [Reads from SQLite: active Arc row, Threads priority queue]
-        [Reads from RAPTOR: root-level summary for macro context]
-
-    Outputs (dict merged into OrchestratorState):
-        fsm_pointer: Updated with the first chapter_id for this arc.
-        [Side effects: Writes Chapter rows to SQLite Chapters table with status='planned']
-
-    Relationships:
-        - Triggered by: node_plan_global (direct edge), or edge_commit_router (arc boundary).
-        - Yields to: node_plan_chapter (via direct edge in graph.py).
-        - Uses: call_llm() with config.endpoints.planner endpoint.
-        - Prompt: prompts/node_plan_arc.xml.j2
-    """
-    pass
+    """Seed the default chapter and set fsm_pointer.chapter_id (Sprint 3 stub)."""
+    start = time.monotonic()
+    pointer = state["fsm_pointer"]
+    db = runtime.SQLITE_PATH
+    try:
+        chapters = sqlite_db.get_remaining_chapters(db, pointer.arc_id)
+        if not chapters:
+            chapter_id = f"{pointer.arc_id}_ch_001"
+            sqlite_db.insert_row(
+                db,
+                "Chapters",
+                {
+                    "chapter_id": chapter_id,
+                    "arc_id": pointer.arc_id,
+                    "title": "Chapter One",
+                    "chapter_index": 0,
+                    "status": "planned",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        else:
+            chapter_id = chapters[0]["chapter_id"]
+        updated = pointer.model_copy(update={"chapter_id": chapter_id})
+        log_node_event(logger, updated.model_dump(), (time.monotonic() - start) * 1000.0, "success")
+        return {"fsm_pointer": updated}
+    except Exception as e:
+        log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "failure", error=repr(e))
+        raise
