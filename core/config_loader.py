@@ -28,6 +28,7 @@ Architecture role:
 import logging
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -96,6 +97,10 @@ class EndpointsConfig(BaseModel):
     critic: EndpointConfig
     pad_translator: EndpointConfig
     craft_consultant: EndpointConfig
+    # Sprint 7: optional judge endpoint for the eval harness. None → the eval
+    # runner falls back to the critic endpoint. Additive default keeps existing
+    # config.yaml files parsing under extra='forbid'.
+    judge: Optional[EndpointConfig] = None
 
 
 class ThresholdsConfig(BaseModel):
