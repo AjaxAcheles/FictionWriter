@@ -198,16 +198,29 @@ class AppConfig(BaseModel):
     Fields:
         project: Manuscript-level parameters (word_count_target).
         log_level: Logging verbosity for fsm.log (DEBUG/INFO/WARNING/ERROR).
+        model_validate_retry_cap: Global cap on FailureObject.model_validate()
+            retries for schema-invalid structured LLM output. On cap exhaustion,
+            call_llm_structured() runs the lenient extraction fallback once, then
+            raises a hard error to the FSM escalation ladder (default 3).
+        headless_mode: When True, node_freeze_and_escalate converts its last-resort
+            pause_requested=True into hard_stop_asserted=True, passing best_seen_draft
+            to the Export Pipeline and halting cleanly with no human intervention.
+            Consumed in Sprint 4 (default False).
         thresholds: All numeric FSM and memory thresholds.
         generation: Retry and replan escalation caps.
         ingestion: Sliding-window chunker parameters.
         endpoints: Named LLM endpoint configurations by role.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    # protected_namespaces=() — the blueprint-mandated key model_validate_retry_cap
+    # collides with Pydantic's default "model_" protected namespace; clearing it is
+    # safe here (no field shadows an actual BaseModel method).
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     project: ProjectConfig
     log_level: str = "DEBUG"
+    model_validate_retry_cap: int = 3
+    headless_mode: bool = False
     thresholds: ThresholdsConfig
     generation: GenerationConfig
     ingestion: IngestionConfig

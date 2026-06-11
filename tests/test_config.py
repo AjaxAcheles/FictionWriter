@@ -17,15 +17,24 @@ Tests:
     test_extra_key_raises_error      — An unknown top-level key raises ValidationError.
     test_extra_endpoint_key_raises   — An unknown key in an EndpointConfig raises ValidationError.
     test_wrong_type_raises_error     — A non-numeric threshold value raises ValidationError.
-    test_missing_required_field      — A missing required endpoint field raises ValidationError.
-    test_threshold_values_accessible — Parsed thresholds match expected proposed defaults.
-    test_endpoint_fields_accessible  — Parsed endpoint fields match config file values.
+    test_threshold_values_match_defaults — Parsed thresholds match expected proposed defaults.
+    test_endpoint_config_accepts_new_fields — Sprint 2 EndpointConfig fields parse.
+    test_model_validate_retry_cap_parses — Global generation keys parse with defaults + overrides.
 """
 
+import copy
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
-from core.config_loader import AppConfig, load_config
+from core.config_loader import AppConfig, EndpointConfig, load_config
+
+
+def _valid_config_dict() -> dict:
+    """Load config.yaml as a plain dict for mutation-based negative tests."""
+    with open("config.yaml", "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def test_valid_config_loads():
@@ -43,7 +52,8 @@ def test_valid_config_loads():
     Expected:
         load_config() returns an AppConfig instance. No exception raised.
     """
-    pass
+    config = load_config()
+    assert isinstance(config, AppConfig)
 
 
 def test_extra_key_raises_error():
@@ -61,7 +71,10 @@ def test_extra_key_raises_error():
     Expected:
         ValidationError raised. No AppConfig instance returned.
     """
-    pass
+    raw = _valid_config_dict()
+    raw["unknown_key"] = "typo"
+    with pytest.raises(ValidationError):
+        AppConfig(**raw)
 
 
 def test_extra_endpoint_key_raises():
@@ -80,7 +93,11 @@ def test_extra_endpoint_key_raises():
     Expected:
         ValidationError raised with a message identifying the offending field path.
     """
-    pass
+    raw = _valid_config_dict()
+    raw["endpoints"]["drafter"]["base_uri"] = "http://localhost:9999/v1"
+    with pytest.raises(ValidationError) as exc_info:
+        AppConfig(**raw)
+    assert "base_uri" in str(exc_info.value)
 
 
 def test_wrong_type_raises_error():
@@ -98,7 +115,10 @@ def test_wrong_type_raises_error():
     Expected:
         ValidationError raised. No AppConfig instance returned.
     """
-    pass
+    raw = _valid_config_dict()
+    raw["thresholds"]["stel_cosine_distance"] = "low"
+    with pytest.raises(ValidationError):
+        AppConfig(**raw)
 
 
 def test_threshold_values_match_defaults():
@@ -116,8 +136,63 @@ def test_threshold_values_match_defaults():
     Expected:
         config.thresholds.stel_cosine_distance == 0.12
         config.thresholds.ewma_alpha == 0.35
-        config.thresholds.coreference_confidence_floor == 0.65
-        config.generation.retry_count_max == 5
-        config.generation.craft_consultant_threshold == 3
     """
-    pass
+    config = load_config()
+    assert config.thresholds.stel_cosine_distance == 0.12
+    assert config.thresholds.ewma_alpha == 0.35
+
+
+def test_endpoint_config_accepts_new_fields():
+    """
+    Assert the three Sprint 2 EndpointConfig fields parse correctly.
+
+    Purpose:
+        Sprint 2 Tier 1 contract: tokenizer_family, supports_concurrent_critics,
+        and grammar_constraint_strategy must be accepted by EndpointConfig with
+        extra='forbid' still in force.
+
+    Inputs:
+        Constructs an EndpointConfig directly with all seven fields populated.
+
+    Expected:
+        The instance carries the three new fields with their given values.
+    """
+    ep = EndpointConfig(
+        base_url="http://localhost:11434/v1",
+        api_key="ollama",
+        model_name="llama3.3:70b",
+        supports_inference_antislop=False,
+        tokenizer_family="tiktoken",
+        supports_concurrent_critics=True,
+        grammar_constraint_strategy="gbnf",
+    )
+    assert ep.tokenizer_family == "tiktoken"
+    assert ep.supports_concurrent_critics is True
+    assert ep.grammar_constraint_strategy == "gbnf"
+
+
+def test_model_validate_retry_cap_parses():
+    """
+    Assert model_validate_retry_cap parses with its default and accepts an override.
+
+    Purpose:
+        Sprint 2 begins consuming model_validate_retry_cap inside call_llm_structured.
+        The key must default to 3 when absent from config.yaml and accept an explicit
+        integer override. headless_mode must likewise default to False.
+
+    Inputs:
+        Parses config dicts with the key absent, then with an explicit override.
+
+    Expected:
+        Default 3 when absent; override value respected; headless_mode defaults False.
+    """
+    raw = _valid_config_dict()
+    raw.pop("model_validate_retry_cap", None)
+    raw.pop("headless_mode", None)
+    config = AppConfig(**raw)
+    assert config.model_validate_retry_cap == 3
+    assert config.headless_mode is False
+
+    raw_override = _valid_config_dict()
+    raw_override["model_validate_retry_cap"] = 5
+    assert AppConfig(**raw_override).model_validate_retry_cap == 5

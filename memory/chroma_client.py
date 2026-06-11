@@ -28,8 +28,58 @@ Architecture role:
     - Initialized by core/runtime.py via init_chroma_collections() on startup/reset.
 """
 
+import hashlib
+import math
+import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+_COLLECTION_NAME = "prose_flavor"
+_CHROMA_SUBDIR = "chroma"
+
+# Module-level singletons set by init_chroma_collections().
+_client = None
+_collection = None
+
+_EMBEDDING_DIM = 384
+
+
+def _hashed_trigram_embedding(text: str) -> list[float]:
+    """
+    Deterministic, dependency-free placeholder embedding.
+
+    Purpose:
+        Maps text to a 384-dim L2-normalized hashed character-trigram count vector.
+        Fully deterministic (no model download, no network) so the HNSW index is
+        functional and testable from Sprint 2 onward. Real semantic embeddings are
+        the Sprint 5+ drop-in: replace via set_embedding_function() — no changes
+        to callers, the collection schema, or node_assemble_context.
+    """
+    vec = [0.0] * _EMBEDDING_DIM
+    padded = f"  {text.lower()}  "
+    for i in range(len(padded) - 2):
+        trigram = padded[i : i + 3]
+        idx = int.from_bytes(hashlib.md5(trigram.encode("utf-8")).digest()[:4], "big") % _EMBEDDING_DIM
+        vec[idx] += 1.0
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm > 0.0:
+        vec = [v / norm for v in vec]
+    return vec
+
+
+_embedding_fn: Callable[[str], list[float]] = _hashed_trigram_embedding
+
+
+def set_embedding_function(fn: Callable[[str], list[float]]) -> None:
+    """
+    Swap the embedding function (Sprint 5+ real-model drop-in point).
+
+    Inputs:
+        fn: Callable mapping a text string to a fixed-length float vector.
+            Must be dimensionally consistent across all calls within one collection.
+    """
+    global _embedding_fn
+    _embedding_fn = fn
 
 
 def init_chroma_collections(data_dir: Path) -> None:
@@ -49,7 +99,19 @@ def init_chroma_collections(data_dir: Path) -> None:
         None. Side effect: ChromaDB client and 'prose_flavor' collection are
         initialized and available for subsequent queries.
     """
-    pass
+    global _client, _collection
+    import chromadb
+
+    chroma_dir = Path(data_dir) / _CHROMA_SUBDIR
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    _client = chromadb.PersistentClient(path=str(chroma_dir))
+    # Embeddings are always supplied explicitly (see _embedding_fn) — the
+    # collection's default embedding function is never invoked, so no model
+    # download occurs.
+    _collection = _client.get_or_create_collection(
+        name=_COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 def reset_collections(data_dir: Path) -> None:
@@ -68,7 +130,12 @@ def reset_collections(data_dir: Path) -> None:
     Outputs:
         None. Side effect: all ChromaDB collection data is deleted.
     """
-    pass
+    global _client, _collection
+    _collection = None
+    _client = None
+    chroma_dir = Path(data_dir) / _CHROMA_SUBDIR
+    if chroma_dir.exists():
+        shutil.rmtree(chroma_dir)
 
 
 def add_prose_embedding(
@@ -94,8 +161,20 @@ def add_prose_embedding(
 
     Outputs:
         None. Side effect: one embedding is added/upserted to the collection.
+
+    Raises:
+        RuntimeError: If init_chroma_collections() has not been called.
     """
-    pass
+    if _collection is None:
+        raise RuntimeError("ChromaDB not initialized — call init_chroma_collections() first.")
+    if embedding_id is None:
+        embedding_id = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    _collection.upsert(
+        ids=[embedding_id],
+        embeddings=[_embedding_fn(text)],
+        documents=[text],
+        metadatas=[metadata],
+    )
 
 
 def query_flavor_vectors(
@@ -126,5 +205,29 @@ def query_flavor_vectors(
         List[dict]: Up to n_results flavor exemplar dicts, each containing:
             text (str), metadata (dict with scene_id/chapter_id/arc_id),
             distance (float, 0–1 cosine distance).
+
+    Raises:
+        RuntimeError: If init_chroma_collections() has not been called.
     """
-    return []
+    if _collection is None:
+        raise RuntimeError("ChromaDB not initialized — call init_chroma_collections() first.")
+
+    # Empty collection is the normal state in early chapters — return [] cleanly.
+    if _collection.count() == 0:
+        return []
+
+    where = {"chapter_id": {"$ne": exclude_chapter_id}} if exclude_chapter_id else None
+    results = _collection.query(
+        query_embeddings=[_embedding_fn(query_text)],
+        n_results=n_results,
+        where=where,
+        include=["documents", "metadatas", "distances"],
+    )
+
+    documents = results.get("documents") or [[]]
+    metadatas = results.get("metadatas") or [[]]
+    distances = results.get("distances") or [[]]
+    return [
+        {"text": doc, "metadata": meta, "distance": dist}
+        for doc, meta, dist in zip(documents[0], metadatas[0], distances[0])
+    ]

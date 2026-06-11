@@ -31,17 +31,45 @@ Architecture role:
     - Uses httpx.AsyncClient for async HTTP — compatible with the Quart event loop.
 """
 
-from typing import AsyncIterator, Optional
+import asyncio
+import json
+import re
+import time
+from typing import AsyncIterator, Optional, Type, TypeVar
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from core.config_loader import EndpointConfig
 from core.logger import get_llm_io_logger, log_llm_call
+from llm.gbnf_compiler import json_schema_to_gbnf
 
 llm_io_logger = get_llm_io_logger()
 
 RETRY_DELAYS = [5, 15]
 MAX_ATTEMPTS = 3
+
+# Transient transport errors eligible for the backoff retry loop. Includes the
+# httpx base TransportError (covers ConnectError, ReadTimeout, RemoteProtocolError,
+# PoolTimeout, etc.) — non-transient HTTP status errors are NOT in this set.
+TRANSIENT_EXCEPTIONS = (httpx.TransportError,)
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class StructuredOutputError(RuntimeError):
+    """
+    Hard failure for the bounded schema-validation sequence.
+
+    Raised by call_llm_structured() when the model_validate retry cap is exhausted
+    AND the lenient extraction fallback fails (or its extracted object still fails
+    validation). Surfaced to the FSM escalation ladder by the calling node — the
+    structured call never loops indefinitely.
+    """
+
+    def __init__(self, message: str, last_response: str):
+        super().__init__(message)
+        self.last_response = last_response
 
 
 async def call_llm(
@@ -90,5 +118,244 @@ async def call_llm(
     Raises:
         httpx.ConnectError / httpx.ReadTimeout: After all retries exhausted.
         httpx.HTTPStatusError: For 4xx/5xx responses that are not transient.
+
+    Note on retry semantics: the retry loop only protects request establishment
+    and streams that fail BEFORE the first chunk is yielded to the caller. Once a
+    chunk has been yielded, a mid-stream transport error is re-raised immediately —
+    retrying would duplicate already-streamed output in the UI.
     """
-    pass
+    payload: dict = {
+        "model": endpoint.model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": stream,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if grammar is not None:
+        if endpoint.grammar_constraint_strategy == "gbnf":
+            payload["grammar"] = grammar
+        elif endpoint.grammar_constraint_strategy == "json_mode":
+            payload["response_format"] = {"type": "json_object"}
+
+    headers = {"Authorization": f"Bearer {endpoint.api_key}"}
+    url = f"{endpoint.base_url.rstrip('/')}/chat/completions"
+    start = time.monotonic()
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(MAX_ATTEMPTS):
+        chunks: list[str] = []
+        yielded_any = False
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
+                if stream:
+                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            chunk = _parse_sse_line(line)
+                            if chunk is None:
+                                continue
+                            chunks.append(chunk)
+                            yielded_any = True
+                            yield chunk
+                else:
+                    response = await client.post(url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    body = response.json()
+                    full_text = body["choices"][0]["message"]["content"]
+                    chunks.append(full_text)
+                    yielded_any = True
+                    yield full_text
+
+            _log_call(payload, "".join(chunks), start)
+            return
+
+        except TRANSIENT_EXCEPTIONS as e:
+            if yielded_any:
+                # Cannot retry after output has reached the caller — re-raise.
+                _log_call(payload, "".join(chunks), start, error=repr(e))
+                raise
+            last_exc = e
+            if attempt < MAX_ATTEMPTS - 1:
+                await asyncio.sleep(RETRY_DELAYS[attempt])
+        except httpx.HTTPStatusError as e:
+            _log_call(payload, "", start, error=repr(e))
+            raise
+
+    _log_call(payload, "", start, error=repr(last_exc))
+    raise last_exc  # type: ignore[misc]  # always set when loop exhausts
+
+
+def _parse_sse_line(line: str) -> Optional[str]:
+    """
+    Extract the content delta from one OpenAI-format SSE line.
+
+    Returns the token chunk string, or None for blank lines, comments, [DONE]
+    sentinels, and deltas that carry no content (e.g., role-only first delta).
+    """
+    line = line.strip()
+    if not line or not line.startswith("data:"):
+        return None
+    data = line[len("data:"):].strip()
+    if data == "[DONE]":
+        return None
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    choices = parsed.get("choices") or []
+    if not choices:
+        return None
+    content = (choices[0].get("delta") or {}).get("content")
+    return content if content else None
+
+
+def _log_call(payload: dict, response_text: str, start: float, error: Optional[str] = None) -> None:
+    """Write exactly one llm_io.log line for a completed (or failed) invocation."""
+    request_payload = dict(payload)
+    if error is not None:
+        request_payload["error"] = error
+    log_llm_call(
+        llm_io_logger,
+        request_payload=request_payload,
+        response_text=response_text,
+        duration_ms=(time.monotonic() - start) * 1000.0,
+    )
+
+
+async def collect_llm_response(
+    endpoint: EndpointConfig,
+    messages: list[dict],
+    temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
+    stream: bool = False,
+    grammar: Optional[str] = None,
+) -> str:
+    """
+    Convenience wrapper: consume call_llm() fully and return the assembled string.
+
+    Purpose:
+        Used by call sites that need the complete response rather than a live
+        stream (planning nodes, critics, the structured-validation sequence).
+        Identical retry/logging semantics to call_llm().
+    """
+    chunks = [
+        chunk
+        async for chunk in call_llm(
+            endpoint, messages, temperature=temperature, max_tokens=max_tokens, stream=stream, grammar=grammar
+        )
+    ]
+    return "".join(chunks)
+
+
+_FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    """
+    Lenient extraction pass: strip markdown fences, return the first balanced {...}.
+
+    Purpose:
+        The cap-exhaustion fallback for the bounded schema-validation sequence.
+        Walks the text character-by-character tracking brace depth and JSON string
+        context (so braces inside string literals don't unbalance the scan).
+
+    Outputs:
+        The first balanced JSON object substring, or None if none exists.
+    """
+    cleaned = _FENCE_RE.sub("", text)
+    depth = 0
+    start_idx: Optional[int] = None
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(cleaned):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start_idx = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0:
+                    return cleaned[start_idx : i + 1]
+    return None
+
+
+async def call_llm_structured(
+    endpoint: EndpointConfig,
+    messages: list[dict],
+    schema_model: Type[T],
+    retry_cap: int,
+    temperature: float = 0.2,
+    max_tokens: Optional[int] = None,
+) -> T:
+    """
+    Bounded schema-validation sequence for structured (critic) calls.
+
+    Purpose:
+        Fires a non-streaming LLM call constrained to schema_model's JSON schema
+        (grammar strategy per endpoint: compiled GBNF attached for "gbnf",
+        vendor JSON-mode flag for "json_mode"), then validates the parsed output
+        with schema_model.model_validate().
+
+        On schema-invalid output, retries the call up to retry_cap times
+        (AppConfig.model_validate_retry_cap, default 3). On cap exhaustion, runs
+        the lenient extraction pass (strip markdown fences, grab the first
+        balanced {...} object) over the LAST response and attempts model_validate()
+        once more. If extraction fails or validation still rejects, raises
+        StructuredOutputError — the loop-safety guarantee: this call never spins.
+
+    Inputs:
+        endpoint: Target EndpointConfig (provides grammar_constraint_strategy).
+        messages: OpenAI-format messages array.
+        schema_model: Pydantic model class the output must validate against.
+        retry_cap: Maximum validation retries (from AppConfig.model_validate_retry_cap).
+        temperature: Sampling temperature (default 0.2 — structured calls run cold).
+        max_tokens: Optional generation cap.
+
+    Outputs:
+        A validated schema_model instance.
+
+    Raises:
+        StructuredOutputError: On cap exhaustion + failed extraction fallback.
+        httpx errors: Propagated from call_llm() (transient retries exhausted).
+    """
+    grammar = (
+        json_schema_to_gbnf(schema_model)
+        if endpoint.grammar_constraint_strategy == "gbnf"
+        else ""  # non-None sentinel → call_llm sets the json_mode vendor flag
+    )
+
+    last_response = ""
+    for _ in range(retry_cap):
+        last_response = await collect_llm_response(
+            endpoint, messages, temperature=temperature, max_tokens=max_tokens, stream=False, grammar=grammar
+        )
+        try:
+            return schema_model.model_validate_json(last_response)
+        except ValidationError:
+            continue
+
+    extracted = _extract_first_json_object(last_response)
+    if extracted is not None:
+        try:
+            return schema_model.model_validate_json(extracted)
+        except ValidationError:
+            pass
+
+    raise StructuredOutputError(
+        f"Structured output failed {schema_model.__name__} validation after "
+        f"{retry_cap} attempt(s) and the lenient extraction fallback. "
+        "Surfacing to the FSM escalation ladder.",
+        last_response=last_response,
+    )

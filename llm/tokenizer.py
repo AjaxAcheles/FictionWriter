@@ -52,7 +52,9 @@ def _get_tiktoken_encoder():
     Outputs:
         tiktoken.Encoding: The cl100k_base encoder instance.
     """
-    pass
+    import tiktoken
+
+    return tiktoken.get_encoding("cl100k_base")
 
 
 @lru_cache(maxsize=8)
@@ -74,7 +76,17 @@ def _get_hf_tokenizer(model_name: str):
     Raises:
         ImportError: If the transformers package is not installed (hf-tokenizer extra missing).
     """
-    pass
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as e:
+        raise ImportError(
+            "tokenizer_family='hf_auto' requires the 'transformers' package, which is "
+            "not installed. Install the optional extra with: uv sync --extra hf-tokenizer "
+            "— or set tokenizer_family to 'tiktoken' or 'char_heuristic' for this "
+            "endpoint in config.yaml."
+        ) from e
+
+    return AutoTokenizer.from_pretrained(model_name)
 
 
 def count_tokens(text: str, tokenizer_family: str, model_name: Optional[str] = None) -> int:
@@ -99,8 +111,28 @@ def count_tokens(text: str, tokenizer_family: str, model_name: Optional[str] = N
 
     Outputs:
         int: Estimated token count for the input text.
+
+    Raises:
+        ValueError: If tokenizer_family is unrecognized, or if model_name is
+            missing when tokenizer_family is "hf_auto".
+        ImportError: If tokenizer_family is "hf_auto" and transformers is absent.
     """
-    pass
+    if tokenizer_family == "tiktoken":
+        return len(_get_tiktoken_encoder().encode(text))
+
+    if tokenizer_family == "hf_auto":
+        if model_name is None:
+            raise ValueError("model_name is required when tokenizer_family is 'hf_auto'.")
+        tokenizer = _get_hf_tokenizer(model_name)
+        return len(tokenizer.encode(text, add_special_tokens=False))
+
+    if tokenizer_family == "char_heuristic":
+        return len(text) // 4
+
+    raise ValueError(
+        f"Unknown tokenizer_family: {tokenizer_family!r}. "
+        "Expected 'tiktoken', 'hf_auto', or 'char_heuristic' (config.yaml endpoints.*.tokenizer_family)."
+    )
 
 
 def fits_in_budget(
@@ -130,4 +162,5 @@ def fits_in_budget(
         bool: True if the text fits within the available input budget.
               False if the text would overflow the context window.
     """
-    pass
+    available = context_window - reserved_output_tokens
+    return count_tokens(text, tokenizer_family, model_name) <= available

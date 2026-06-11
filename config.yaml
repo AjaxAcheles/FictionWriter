@@ -14,6 +14,9 @@ project:
 
 log_level: "DEBUG"                   # Logging verbosity for fsm.log. Options: DEBUG, INFO, WARNING, ERROR.
 
+model_validate_retry_cap: 3          # Max FailureObject.model_validate() retries on schema-invalid structured output before the lenient extraction fallback fires (call_llm_structured).
+headless_mode: false                 # When true, node_freeze_and_escalate's last-resort pause converts to a clean hard stop + Export Pipeline (best_seen_draft). No human intervention awaited.
+
 thresholds:
   stel_cosine_distance: 0.12        # Dc gate used by edge_mode_selector. Drafts with Dc >= this value are flagged for revision. (STEL cosine distance, 0-1 range)
   ewma_alpha: 0.35                  # Exponentially Weighted Moving Average alpha for PAD emotional acceleration (ΔE). Higher = more reactive to recent beats.
