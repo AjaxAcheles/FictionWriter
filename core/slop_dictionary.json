@@ -1,0 +1,23 @@
+{
+  "_comment": "Antislop dictionary. Each entry: pattern (case-insensitive substring or 're:'-prefixed regex), category, severity 0-1, optional replacement (deterministic programmatic fix). No replacement means the flag is reported for LLM-side revision.",
+  "entries": [
+    {"pattern": "barely above a whisper", "category": "cliche", "severity": 0.9, "replacement": "quietly"},
+    {"pattern": "shivers down", "category": "cliche", "severity": 0.8},
+    {"pattern": "a testament to", "category": "llm_ism", "severity": 0.9, "replacement": "proof of"},
+    {"pattern": "couldn't help but", "category": "cliche", "severity": 0.7, "replacement": ""},
+    {"pattern": "let out a breath", "category": "cliche", "severity": 0.85},
+    {"pattern": "heart pounded", "category": "cliche", "severity": 0.6},
+    {"pattern": "heart hammered", "category": "cliche", "severity": 0.6},
+    {"pattern": "eyes widened", "category": "cliche", "severity": 0.6},
+    {"pattern": "palpable", "category": "llm_ism", "severity": 0.7, "replacement": "thick"},
+    {"pattern": "rich tapestry", "category": "llm_ism", "severity": 0.95, "replacement": "weave"},
+    {"pattern": "symphony of", "category": "llm_ism", "severity": 0.85},
+    {"pattern": "danced across", "category": "llm_ism", "severity": 0.7, "replacement": "moved across"},
+    {"pattern": "in that moment", "category": "filler", "severity": 0.5, "replacement": "then"},
+    {"pattern": "little did", "category": "cliche", "severity": 0.8},
+    {"pattern": "the air was thick with", "category": "cliche", "severity": 0.8},
+    {"pattern": "a mix of", "category": "llm_ism", "severity": 0.6},
+    {"pattern": "re:\\bsuddenly,?\\s", "category": "filler", "severity": 0.4},
+    {"pattern": "re:\\b(\\w+ly)\\s+(\\w+ly)\\s+(\\w+ly)\\b", "category": "adverb_cluster", "severity": 0.7}
+  ]
+}

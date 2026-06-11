@@ -28,8 +28,12 @@ Architecture role:
       resolve_slop. Both Sprint 6 implementations must conform to this schema.
 """
 
+import json
+import re
 from dataclasses import dataclass
-from typing import List
+from functools import lru_cache
+from pathlib import Path
+from typing import List, Optional
 
 
 @dataclass
@@ -57,6 +61,62 @@ class SlopFlag:
     offending_text: str
     category: str = "cliche"
     severity: float = 1.0
+    replacement: Optional[str] = None
+
+
+_DICTIONARY_PATH = Path(__file__).resolve().parent / "slop_dictionary.json"
+
+# Structural detector: the same sentence opener used 3+ times in a row.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+@lru_cache(maxsize=1)
+def _load_dictionary() -> tuple:
+    """
+    Load and compile the slop dictionary once per process.
+
+    Returns a tuple of (compiled_regex, category, severity, replacement) rows.
+    're:'-prefixed patterns are raw regexes; plain patterns are matched as
+    case-insensitive substrings with word-ish boundaries.
+    """
+    data = json.loads(_DICTIONARY_PATH.read_text(encoding="utf-8"))
+    compiled = []
+    for entry in data["entries"]:
+        pattern = entry["pattern"]
+        if pattern.startswith("re:"):
+            regex = re.compile(pattern[3:], re.IGNORECASE)
+        else:
+            regex = re.compile(re.escape(pattern), re.IGNORECASE)
+        compiled.append(
+            (regex, entry.get("category", "cliche"), float(entry.get("severity", 1.0)),
+             entry.get("replacement"))
+        )
+    return tuple(compiled)
+
+
+def _detect_repeated_openers(text: str) -> List[SlopFlag]:
+    """Flag 3+ consecutive sentences sharing the same first word (monotony)."""
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    flags: List[SlopFlag] = []
+    run_start = 0
+    for i in range(1, len(sentences) + 1):
+        same = (
+            i < len(sentences)
+            and sentences[i].split()[:1] == sentences[run_start].split()[:1]
+            and sentences[run_start].split()
+        )
+        if not same:
+            if i - run_start >= 3:
+                opener = sentences[run_start].split()[0]
+                flags.append(
+                    SlopFlag(
+                        offending_text=opener,
+                        category="repeated_opener",
+                        severity=0.5,
+                    )
+                )
+            run_start = i
+    return flags
 
 
 def detect_slop(text: str) -> List[SlopFlag]:
@@ -79,9 +139,34 @@ def detect_slop(text: str) -> List[SlopFlag]:
 
     Outputs:
         List[SlopFlag]: Zero or more SlopFlag instances identifying offending spans.
-        Currently always returns [].
+
+        Sprint 6 implementation: case-insensitive dictionary phrase/regex
+        matching (core/slop_dictionary.json) plus structural detectors
+        (adverb clusters via dictionary regex, repeated sentence openers).
+        Pure and deterministic — identical text in, identical flags out.
     """
-    return []
+    if not text:
+        return []
+    flags: List[SlopFlag] = []
+    seen: set = set()
+    for regex, category, severity, replacement in _load_dictionary():
+        for match in regex.finditer(text):
+            span_text = match.group(0)
+            key = (span_text.lower(), category)
+            if key in seen:
+                continue  # one flag per distinct offending span per category
+            seen.add(key)
+            flags.append(
+                SlopFlag(
+                    offending_text=span_text,
+                    category=category,
+                    severity=severity,
+                    replacement=replacement,
+                )
+            )
+    flags.extend(_detect_repeated_openers(text))
+    flags.sort(key=lambda f: -f.severity)
+    return flags
 
 
 def resolve_slop(text: str, flags: List[SlopFlag]) -> str:
@@ -106,6 +191,25 @@ def resolve_slop(text: str, flags: List[SlopFlag]) -> str:
 
     Outputs:
         str: The corrected prose string. If flags is empty or no corrections are
-        applied, returns text unchanged. Currently always returns text unchanged.
+        applied, returns text unchanged.
+
+        Sprint 6 implementation: deterministic direct fixes. Flags whose
+        dictionary entry carries a replacement are substituted case-insensitively
+        (whitespace normalized when the replacement is an empty string). Flags
+        without a replacement are left in place — they remain visible to the
+        Stage 1/2 critics, and endpoints with supports_inference_antislop=True
+        can resolve them at the sampler level instead. Idempotent: re-running on
+        corrected output applies no further changes.
     """
-    return text
+    if not flags:
+        return text
+    corrected = text
+    for flag in flags:
+        if flag.replacement is None:
+            continue
+        pattern = re.compile(re.escape(flag.offending_text), re.IGNORECASE)
+        corrected = pattern.sub(flag.replacement, corrected)
+    # Normalize doubled spaces left by empty-string replacements.
+    corrected = re.sub(r"[ \t]{2,}", " ", corrected)
+    corrected = re.sub(r" ([,.;!?])", r"\1", corrected)
+    return corrected

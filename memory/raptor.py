@@ -65,10 +65,126 @@ def cluster_scenes(scene_texts: list[str]) -> list[str]:
         scene_texts: List[str] — committed scene texts for one chapter.
 
     Outputs:
-        List[str]: Clustered scene text groups. In Sprint 1–5, returns scene_texts
-            unmodified. In Sprint 6, returns one string per semantic cluster.
+        List[str]: Clustered scene text groups — one concatenated string per
+            semantic cluster, deterministic ordering (clusters ordered by their
+            lowest member index; members joined in document order).
+
+    Sprint 6 implementation (self-contained, no igraph dependency):
+        1. Embed each scene with the deterministic hashed-trigram embedding
+           shared with the ChromaDB client (no model download, fully offline).
+        2. Cosine similarity matrix via numpy.
+        3. Threshold the similarity graph at
+           config.thresholds.raptor_cluster_similarity (default 0.65).
+        4. Leiden-style community detection: greedy local moving over the
+           thresholded weighted graph, followed by a refinement pass that splits
+           internally-disconnected communities (the property Leiden guarantees
+           over Louvain).
     """
-    return scene_texts
+    if len(scene_texts) <= 1:
+        return list(scene_texts)
+
+    import numpy as np
+
+    from memory.chroma_client import _hashed_trigram_embedding
+
+    try:
+        from core.config_loader import load_config
+
+        threshold = load_config().thresholds.raptor_cluster_similarity
+    except Exception:  # config unavailable in isolated unit tests
+        threshold = 0.65
+
+    vectors = np.array([_hashed_trigram_embedding(t) for t in scene_texts], dtype=float)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    unit = vectors / norms
+    similarity = unit @ unit.T
+
+    n = len(scene_texts)
+    adjacency = np.where(similarity >= threshold, similarity, 0.0)
+    np.fill_diagonal(adjacency, 0.0)
+
+    labels = _leiden_communities(adjacency)
+
+    clusters: dict[int, list[int]] = {}
+    for index, label in enumerate(labels):
+        clusters.setdefault(label, []).append(index)
+    ordered = sorted(clusters.values(), key=lambda members: members[0])
+    return ["\n\n".join(scene_texts[i] for i in members) for members in ordered]
+
+
+def _leiden_communities(adjacency) -> list[int]:
+    """
+    Leiden-style community detection on a weighted adjacency matrix.
+
+    Local moving phase: greedily move each node to the neighboring community
+    with the highest positive modularity gain until no move improves. Refinement
+    phase: split any community whose induced subgraph is internally disconnected
+    (the well-connectedness guarantee distinguishing Leiden from Louvain).
+    Deterministic: nodes are visited in index order.
+    """
+    import numpy as np
+
+    n = adjacency.shape[0]
+    labels = list(range(n))
+    total_weight = adjacency.sum() / 2.0
+    if total_weight == 0.0:
+        return labels  # no edges above threshold — every scene is a singleton
+    degrees = adjacency.sum(axis=1)
+
+    improved = True
+    sweeps = 0
+    while improved and sweeps < 10:
+        improved = False
+        sweeps += 1
+        for node in range(n):
+            current = labels[node]
+            best_label, best_gain = current, 0.0
+            neighbor_labels = {labels[j] for j in range(n) if adjacency[node, j] > 0.0}
+            for candidate in sorted(neighbor_labels):
+                if candidate == current:
+                    continue
+                # Modularity gain of moving `node` into `candidate`.
+                k_in_new = sum(adjacency[node, j] for j in range(n) if labels[j] == candidate)
+                k_in_old = sum(
+                    adjacency[node, j] for j in range(n) if labels[j] == current and j != node
+                )
+                sum_new = sum(degrees[j] for j in range(n) if labels[j] == candidate)
+                sum_old = sum(degrees[j] for j in range(n) if labels[j] == current and j != node)
+                gain = (k_in_new - k_in_old) / total_weight - degrees[node] * (
+                    sum_new - sum_old
+                ) / (2.0 * total_weight**2)
+                if gain > best_gain + 1e-12:
+                    best_gain, best_label = gain, candidate
+            if best_label != current:
+                labels[node] = best_label
+                improved = True
+
+    # Refinement: split internally-disconnected communities via BFS components.
+    next_label = max(labels) + 1
+    for community in sorted(set(labels)):
+        members = [i for i in range(n) if labels[i] == community]
+        if len(members) <= 1:
+            continue
+        unvisited = set(members)
+        components = []
+        while unvisited:
+            seed = min(unvisited)
+            stack, component = [seed], {seed}
+            unvisited.discard(seed)
+            while stack:
+                node = stack.pop()
+                for j in list(unvisited):
+                    if adjacency[node, j] > 0.0:
+                        unvisited.discard(j)
+                        component.add(j)
+                        stack.append(j)
+            components.append(sorted(component))
+        for extra in components[1:]:
+            for i in extra:
+                labels[i] = next_label
+            next_label += 1
+    return labels
 
 
 def init_raptor_tree(db_path: Path) -> dict:
