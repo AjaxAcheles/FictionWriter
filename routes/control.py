@@ -60,7 +60,14 @@ async def pause():
     """
     global pause_requested
     pause_requested = True
+    from core import stream_bus
+    stream_bus.publish({"type": "status", "status": "paused"})
     return {"status": "pause_requested"}
+
+
+def is_paused() -> bool:
+    """True when the FSM is pause-flagged (branch restore safety guard)."""
+    return pause_requested
 
 
 @control_bp.route("/control/resume", methods=["POST"])
@@ -81,6 +88,8 @@ async def resume():
     """
     global pause_requested
     pause_requested = False
+    from core import stream_bus
+    stream_bus.publish({"type": "status", "status": "resumed"})
     return {"status": "resumed"}
 
 
