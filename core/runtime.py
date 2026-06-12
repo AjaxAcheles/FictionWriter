@@ -146,4 +146,4 @@ async def reset_resources(config: AppConfig) -> None:
     for style_file in STYLES_DIR.glob("*.json"):
         style_file.unlink()
 
-    await init_resou
+    await init_resources(config)
