@@ -22,8 +22,9 @@ Purpose:
     premature scene closure when generation runs short.
 
     Chapter boundary (all scenes in the chapter closed): Epistemic Belief
-    promotion pass (200-token window scan of committed text — a structural
-    no-op while the Graphiti driver returns no provisional links), snapshot ZIP
+    promotion pass (200-token window scan of committed text against the pending
+    provisional coreference claims — reinforced claims are confirmed in the
+    provisional store and stamped into Graphiti as permanent facts), snapshot ZIP
     of data/fictionwriter.db (sqlite3.Connection.backup()) + data/graphiti.db
     (file copy; Redis SAVE is issued when the FalkorDB Lite driver is live),
     then a synchronous node_compress_memory call before yielding to the router.
@@ -223,7 +224,7 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
             # Chapter boundary?
             if not sqlite_db.get_remaining_scenes(db, pointer.chapter_id):
                 sqlite_db.set_chapter_status(db, pointer.chapter_id, "completed")
-                _promote_epistemic_beliefs(db, pointer.chapter_id)
+                await _promote_epistemic_beliefs(db, pointer.chapter_id)
                 await snapshot_databases(
                     runtime.SNAPSHOTS_DIR, db, runtime.GRAPHITI_PATH, pointer.chapter_id
                 )
@@ -253,14 +254,82 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
         raise
 
 
-def _promote_epistemic_beliefs(db: Path, chapter_id: str) -> None:
-    """
-    Chapter-boundary Epistemic Belief promotion (200-token window scan).
+PROMOTION_WINDOW_TOKENS = 200
 
-    Structural placement for the Sprint 5 ingestion pipeline: while the Graphiti
-    stub driver exposes no provisional links, the pass scans zero links — the
-    hook point, window math, and call site are final.
+
+def _normalize_tokens(text: str) -> list[str]:
+    """Lowercased, punctuation-stripped tokens for window co-occurrence scans."""
+    return [t.strip(".,!?;:\"'()[]—–-") for t in text.lower().split()]
+
+
+def _cooccur_within_window(
+    tokens: list[str], name_tokens: list[str], pronoun: str, window: int
+) -> bool:
+    """True when the entity name and the pronoun appear within `window` tokens."""
+    if not name_tokens:
+        return False
+    span = len(name_tokens)
+    name_positions = [
+        i for i in range(len(tokens) - span + 1) if tokens[i : i + span] == name_tokens
+    ]
+    if not name_positions:
+        return False
+    pronoun_positions = [i for i, t in enumerate(tokens) if t == pronoun]
+    return any(
+        abs(p - n) <= window for p in pronoun_positions for n in name_positions
+    )
+
+
+async def _promote_epistemic_beliefs(db: Path, chapter_id: str) -> None:
     """
+    Chapter-boundary Epistemic Belief promotion (200-token window heuristic).
+
+    For each pending provisional coreference claim, the chapter's committed text
+    is scanned: when the linked entity's name and the claimed pronoun co-occur
+    within a 200-token window, the claim is reinforced — confirmed in the
+    provisional store and stamped into Graphiti as a permanent high-confidence
+    REFERS_TO fact (deterministic-UUID upsert, no-op while the graph backend is
+    degraded). Claims never reinforced stay pending for the non-blocking
+    Alignment review UI; contradiction requires conflicting-antecedent evidence
+    this heuristic does not infer, so nothing is auto-dropped.
+    """
+    from memory import provisional_store
+    from memory.graphiti_client import upsert_temporal_edge
+
+    pending = provisional_store.list_pending()
     texts = sqlite_db.get_scene_texts_for_chapter(db, chapter_id)
-    _ = " ".join(texts).split()[:200]  # 200-token window basis (no links to promote yet)
-    logger.info("epistemic belief promotion pass completed for chapter %s (0 provisional links)", chapter_id)
+    tokens = _normalize_tokens(" ".join(texts))
+    if not pending or not tokens:
+        logger.info(
+            "epistemic belief promotion pass completed for chapter %s "
+            "(%d provisional links, 0 promoted)", chapter_id, len(pending),
+        )
+        return
+
+    char_names = {c["char_id"]: c["name"] for c in sqlite_db.get_characters(db)}
+    promoted = 0
+    for claim in pending:
+        entity_id = claim.get("linked_entity_id") or ""
+        pronoun = (claim.get("pronoun_text") or "").lower().strip()
+        # Entity ID falls back to its trailing slug when no Character row exists.
+        name = char_names.get(entity_id) or entity_id.rsplit("_", 1)[-1]
+        name_tokens = _normalize_tokens(name)
+        if not pronoun or not name_tokens:
+            continue
+        if not _cooccur_within_window(tokens, name_tokens, pronoun, PROMOTION_WINDOW_TOKENS):
+            continue
+        if provisional_store.confirm(claim["claim_id"]):
+            promoted += 1
+            await upsert_temporal_edge(
+                entity_a_id=f"pronoun_{pronoun}",
+                entity_b_id=entity_id,
+                edge_type="REFERS_TO",
+                valid_from_event_id=chapter_id,
+                valid_until_event_id=None,
+                attributes={"confidence": 1.0, "claim_id": claim["claim_id"],
+                            "promoted_by": "epistemic_promotion"},
+            )
+    logger.info(
+        "epistemic belief promotion pass completed for chapter %s (%d provisional links, %d promoted)",
+        chapter_id, len(pending), promoted,
+    )

@@ -202,9 +202,39 @@ def init_raptor_tree(db_path: Path) -> dict:
 
     Outputs:
         dict: In-memory tree representation keyed by node ID. Each value is a dict
-            with: id, parent_id, level, summary, updated_at.
+            with: id, parent_id, level, summary, updated_at. parent_id is decoded
+            from source_scene_ids_json (the table has no parent_id column).
     """
-    return {}
+    import sqlite3
+    from contextlib import closing
+
+    from memory.sqlite_db import get_connection
+
+    if not Path(db_path).exists():
+        return {}
+    try:
+        with closing(get_connection(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT node_id, level, summary_text, source_scene_ids_json, created_at "
+                "FROM RaptorNodes"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return {}  # RaptorNodes table absent (schema not initialized yet)
+
+    tree: dict = {}
+    for row in rows:
+        try:
+            meta = json.loads(row["source_scene_ids_json"] or "{}")
+        except json.JSONDecodeError:
+            meta = {}
+        tree[row["node_id"]] = {
+            "id": row["node_id"],
+            "parent_id": meta.get("parent_id"),
+            "level": _INT_TO_LEVEL.get(row["level"], row["level"]),
+            "summary": row["summary_text"],
+            "updated_at": row["created_at"],
+        }
+    return tree
 
 
 def write_raptor_node(

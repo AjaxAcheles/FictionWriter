@@ -22,8 +22,19 @@ Purpose:
     This makes crash recovery replay safe — replaying a .jsonl record recomputes
     the identical UUID and upserts rather than duplicates.
 
-    _apply_event() is a no-op stub in early development to allow crash recovery logic
-    to be tested end-to-end before full Graphiti writes are wired in.
+    Graph schema (custom, written via raw Cypher through the FalkorDriver):
+    - Nodes: (:Entity {entity_id}) — MERGE-keyed by entity_id.
+    - Edges: [:FACT {edge_id, edge_type, valid_from_event_id,
+      valid_until_event_id, confidence, attributes_json, valid_from_ts,
+      valid_until_ts}] — MERGE-keyed by the deterministic edge_id.
+    Event IDs are beat IDs (no inherent ordering), so point-in-time filtering
+    uses the write timestamps (valid_from_ts / valid_until_ts), stamped once at
+    first write (coalesce keeps them stable across idempotent replays).
+
+    _apply_event() is the sync replay funnel: it accepts either a raw edge
+    payload (from upsert_temporal_edge) or a beat_commit event record (from
+    branch_manager crash-recovery replay), normalizes it to edge dicts, and
+    runs the async graph write in whichever loop context is available.
 
     Branch restore: FalkorDB Lite stores data in data/graphiti.db on disk. Snapshotting
     is a uniform file-copy operation identical to SQLite. On branch restore, the target
@@ -40,12 +51,18 @@ Architecture role:
     - Restored by memory/branch_manager.py for branch operations and crash recovery.
 """
 
+import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from uuid import uuid5, NAMESPACE_OID
 
 _graphiti_client = None
+
+# ISO strings compare lexicographically — this sentinel means "now" (no cutoff).
+_FAR_FUTURE_TS = "9999-12-31T23:59:59+00:00"
 
 
 async def init_graphiti_client(config=None):
@@ -136,6 +153,72 @@ def get_graphiti_client():
     return _graphiti_client
 
 
+def _get_driver():
+    """The GraphDriver behind the singleton, or None when degraded."""
+    if _graphiti_client is None:
+        return None
+    return getattr(_graphiti_client, "driver", None) or getattr(
+        _graphiti_client, "graph_driver", None
+    )
+
+
+def compute_edge_id(
+    entity_a_id: str, entity_b_id: str, edge_type: str, valid_from_event_id: str
+) -> str:
+    """The deterministic UUID every edge write is keyed by (idempotency contract)."""
+    return str(
+        uuid5(NAMESPACE_OID, f"{entity_a_id}:{entity_b_id}:{edge_type}:{valid_from_event_id}")
+    )
+
+
+async def _write_edge(edge: dict) -> None:
+    """
+    Execute one idempotent FACT-edge upsert against FalkorDB.
+
+    MERGE-keyed by edge_id; valid_from_ts / valid_until_ts are stamped once at
+    first write (coalesce), so crash-recovery replays never shift the temporal
+    window. Never raises — a failed write degrades to a WARNING (the FSM must
+    not block on the graph backend).
+    """
+    driver = _get_driver()
+    if driver is None:
+        return
+    attributes = edge.get("attributes") or {}
+    until_clause = (
+        ",\n            r.valid_until_ts = coalesce(r.valid_until_ts, $now)"
+        if edge.get("valid_until_event_id")
+        else ""
+    )
+    query = f"""
+        MERGE (a:Entity {{entity_id: $a}})
+        MERGE (b:Entity {{entity_id: $b}})
+        MERGE (a)-[r:FACT {{edge_id: $edge_id}}]->(b)
+        SET r.edge_type = $edge_type,
+            r.valid_from_event_id = $valid_from,
+            r.valid_until_event_id = $valid_until,
+            r.confidence = $confidence,
+            r.attributes_json = $attributes_json,
+            r.valid_from_ts = coalesce(r.valid_from_ts, $now){until_clause}
+    """
+    try:
+        await driver.execute_query(
+            query,
+            a=edge["entity_a_id"],
+            b=edge["entity_b_id"],
+            edge_id=edge["edge_id"],
+            edge_type=edge.get("edge_type") or "related_to",
+            valid_from=edge.get("valid_from_event_id"),
+            valid_until=edge.get("valid_until_event_id"),
+            confidence=float(attributes.get("confidence", edge.get("confidence", 1.0))),
+            attributes_json=json.dumps(attributes),
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as e:  # noqa: BLE001 — graph writes are best-effort by contract
+        logging.getLogger(__name__).warning(
+            "Graphiti edge write failed for %s (%r) — edge dropped.", edge.get("edge_id"), e
+        )
+
+
 async def upsert_temporal_edge(
     entity_a_id: str,
     entity_b_id: str,
@@ -153,8 +236,8 @@ async def upsert_temporal_edge(
         This determinism makes repeated calls (e.g., during crash recovery replay)
         safe — the upsert replaces the existing edge rather than creating a duplicate.
 
-        Sprint 1: delegates to _apply_event() no-op stub. Full Graphiti writes wired
-        in Sprint 3+.
+        Degraded mode (no FalkorDB server): a silent no-op — the FSM never blocks
+        on the graph backend.
 
     Inputs:
         entity_a_id: str — source entity node ID.
@@ -168,9 +251,8 @@ async def upsert_temporal_edge(
     Outputs:
         None. Side effect: upserts one temporal edge in the Graphiti graph.
     """
-    edge_id = str(uuid5(NAMESPACE_OID, f"{entity_a_id}:{entity_b_id}:{edge_type}:{valid_from_event_id}"))
-    _apply_event({
-        "edge_id": edge_id,
+    await _write_edge({
+        "edge_id": compute_edge_id(entity_a_id, entity_b_id, edge_type, valid_from_event_id),
         "entity_a_id": entity_a_id,
         "entity_b_id": entity_b_id,
         "edge_type": edge_type,
@@ -178,6 +260,27 @@ async def upsert_temporal_edge(
         "valid_until_event_id": valid_until_event_id,
         "attributes": attributes,
     })
+
+
+_EDGE_HOP_QUERY = """
+    MATCH (a:Entity)-[r:FACT]->(b:Entity)
+    WHERE (a.entity_id IN $ids OR b.entity_id IN $ids)
+      AND r.valid_from_ts <= $active_ts
+      AND (r.valid_until_ts IS NULL OR r.valid_until_ts > $active_ts)
+    RETURN r.edge_id AS edge_id,
+           a.entity_id AS entity_a_id,
+           b.entity_id AS entity_b_id,
+           r.edge_type AS edge_type,
+           r.confidence AS confidence,
+           r.attributes_json AS attributes_json,
+           r.valid_from_event_id AS valid_from_event_id
+"""
+
+_EVENT_TS_QUERY = """
+    MATCH (:Entity)-[r:FACT]->(:Entity)
+    WHERE r.valid_from_event_id = $eid
+    RETURN min(r.valid_from_ts) AS ts
+"""
 
 
 async def query_point_in_time_subgraph(
@@ -189,8 +292,15 @@ async def query_point_in_time_subgraph(
     Return temporal edges within the valid window of the given event ID.
 
     Purpose:
-        Sprint 1 stub — returns empty list. Full traversal implemented in Sprint 3+
-        once Graphiti writes are wired in.
+        Frontier BFS from the seed entities, one Cypher query per hop, collecting
+        FACT edges valid at the active event's point in time. Event IDs carry no
+        inherent ordering, so the temporal window is evaluated on the write
+        timestamps: the active event resolves to the valid_from_ts of any edge it
+        created; an unknown event (the beat currently being drafted — the normal
+        case) means "now", i.e. all currently-valid edges.
+
+        Degraded mode (no FalkorDB server) and any query failure return [] —
+        the FSM never blocks on the graph backend.
 
     Inputs:
         entity_ids: List[str] — seed entity IDs to start traversal from.
@@ -198,26 +308,137 @@ async def query_point_in_time_subgraph(
         max_hops: int — maximum traversal depth (default 2).
 
     Outputs:
-        List[dict]: Empty list in Sprint 1. Sprint 3+: temporal edge dicts within
-            the valid window.
+        List[dict]: edge dicts with entity_a_id, entity_b_id, edge_type,
+            confidence, attributes (dict), valid_from_event_id, edge_id —
+            the shape partition_coreference_links and _edges_to_text consume.
     """
+    driver = _get_driver()
+    if driver is None or not entity_ids:
+        return []
+
+    try:
+        active_ts = _FAR_FUTURE_TS
+        result = await driver.execute_query(_EVENT_TS_QUERY, eid=active_event_id)
+        records = (result or [None])[0] or []
+        if records and records[0].get("ts"):
+            active_ts = records[0]["ts"]
+
+        frontier = list(dict.fromkeys(entity_ids))
+        seen_entities = set(frontier)
+        edges_by_id: dict[str, dict] = {}
+        for _ in range(max(1, max_hops)):
+            if not frontier:
+                break
+            result = await driver.execute_query(
+                _EDGE_HOP_QUERY, ids=frontier, active_ts=active_ts
+            )
+            records = (result or [None])[0] or []
+            frontier = []
+            for record in records:
+                edge_id = record.get("edge_id")
+                if not edge_id or edge_id in edges_by_id:
+                    continue
+                try:
+                    attributes = json.loads(record.get("attributes_json") or "{}")
+                except json.JSONDecodeError:
+                    attributes = {}
+                edges_by_id[edge_id] = {
+                    "edge_id": edge_id,
+                    "entity_a_id": record.get("entity_a_id"),
+                    "entity_b_id": record.get("entity_b_id"),
+                    "edge_type": record.get("edge_type"),
+                    "confidence": float(record.get("confidence") or 1.0),
+                    "attributes": attributes,
+                    "valid_from_event_id": record.get("valid_from_event_id"),
+                }
+                for entity in (record.get("entity_a_id"), record.get("entity_b_id")):
+                    if entity and entity not in seen_entities:
+                        seen_entities.add(entity)
+                        frontier.append(entity)
+        return list(edges_by_id.values())
+    except Exception as e:  # noqa: BLE001 — graph reads are best-effort by contract
+        logging.getLogger(__name__).warning(
+            "Graphiti point-in-time query failed (%r) — returning empty subgraph.", e
+        )
+        return []
+
+
+def _edges_from_payload(event_payload: dict) -> list[dict]:
+    """
+    Normalize an _apply_event payload to writable edge dicts.
+
+    Two payload shapes arrive here:
+    - A raw edge dict (entity_a_id/entity_b_id keys) — applied as-is, with the
+      deterministic edge_id recomputed when absent.
+    - A beat_commit event record from the .jsonl log — reconstructed into the
+      identical CONTAINS_BEAT edge node_commit_transaction originally wrote
+      (same deterministic UUID, so replay is an idempotent upsert).
+    """
+    if event_payload.get("entity_a_id") and event_payload.get("entity_b_id"):
+        edge = dict(event_payload)
+        edge.setdefault(
+            "edge_id",
+            compute_edge_id(
+                edge["entity_a_id"],
+                edge["entity_b_id"],
+                edge.get("edge_type") or "related_to",
+                edge.get("valid_from_event_id") or "",
+            ),
+        )
+        return [edge]
+
+    if event_payload.get("type") == "beat_commit":
+        scene_id = event_payload.get("scene_id")
+        beat_id = event_payload.get("beat_id")
+        if not scene_id or not beat_id:
+            return []
+        return [{
+            "edge_id": compute_edge_id(scene_id, beat_id, "CONTAINS_BEAT", beat_id),
+            "entity_a_id": scene_id,
+            "entity_b_id": beat_id,
+            "edge_type": "CONTAINS_BEAT",
+            "valid_from_event_id": beat_id,
+            "valid_until_event_id": None,
+            "attributes": {"word_count": event_payload.get("word_count", 0)},
+        }]
+
     return []
 
 
 def _apply_event(event_payload: dict) -> None:
     """
-    Replay one beat_commit event against the Graphiti graph. NO-OP STUB.
+    Replay one event payload against the Graphiti graph (sync funnel).
 
     Purpose:
-        Called during crash recovery replay to reapply Graphiti writes from .jsonl
-        event records. Currently a no-op stub to allow crash recovery logic to be
-        tested end-to-end before full Graphiti writes are wired in. When implemented,
-        it extracts temporal edge data from the event_payload and calls upsert_temporal_edge().
+        Called by memory/branch_manager.py during crash recovery replay to
+        reapply Graphiti writes from .jsonl event records. Normalizes the
+        payload via _edges_from_payload and executes the idempotent upserts.
+
+        Sync/async bridge: crash recovery runs synchronously before the FSM
+        resumes, so with no running loop the writes execute via asyncio.run.
+        Inside a live loop (e.g. a route handler) they are scheduled as a task
+        — graph writes are best-effort and idempotent, so completion ordering
+        is not load-bearing.
 
     Inputs:
-        event_payload: dict — a beat_commit event dict from the .jsonl log.
+        event_payload: dict — an edge dict or a beat_commit event record.
 
     Outputs:
-        None. No-op stub.
+        None. Side effect: upserts the normalized edges (no-op when degraded).
     """
-    return
+    if _graphiti_client is None:
+        return
+    edges = _edges_from_payload(event_payload)
+    if not edges:
+        return
+
+    async def _apply_all() -> None:
+        for edge in edges:
+            await _write_edge(edge)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_apply_all())
+        return
+    loop.create_task(_apply_all())

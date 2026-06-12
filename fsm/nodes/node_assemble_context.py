@@ -28,8 +28,8 @@ Purpose:
 Architecture role:
     - Triggered by node_plan_beat (or node_human_intervention after rollback).
     - Yields to node_draft_prose; package keys match node_draft_prose.xml.j2.
-    - RAPTOR and Graphiti reads are live from Sprint 3 onward — the Graphiti
-      stub driver may return an empty subgraph, but the query is always issued.
+    - RAPTOR and Graphiti reads are live — a degraded Graphiti driver (no
+      FalkorDB server) returns an empty subgraph, but the query is always issued.
 """
 
 import json

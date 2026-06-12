@@ -27,20 +27,34 @@ from pathlib import Path
 STORE_PATH = Path("data/provisional_claims.json")
 
 
+def _store_path() -> Path:
+    """
+    Resolve the store file under core.runtime.DATA_DIR so test fixtures that
+    monkeypatch DATA_DIR isolate this store too. Falls back to STORE_PATH.
+    """
+    try:
+        from core import runtime
+        return Path(runtime.DATA_DIR) / STORE_PATH.name
+    except Exception:
+        return STORE_PATH
+
+
 def _load() -> list[dict]:
-    if not STORE_PATH.exists():
+    path = _store_path()
+    if not path.exists():
         return []
     try:
-        return json.loads(STORE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return []
 
 
 def _save(claims: list[dict]) -> None:
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STORE_PATH.with_suffix(".tmp")
+    path = _store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(claims, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_PATH)
+    os.replace(tmp, path)
 
 
 def add_claims(claims: list[dict]) -> list[str]:
