@@ -80,6 +80,27 @@ async def node_plan_chapter(state: OrchestratorState) -> dict:
 
     try:
         open_scenes = sqlite_db.get_remaining_scenes(db, pointer.chapter_id)
+
+        # Chapter-advance guard. edge_commit_router routes back here on chapter
+        # advance but cannot mutate the pointer — a conditional edge only returns
+        # a destination string. So when the active chapter is already 'completed'
+        # and has no open scenes, this node must advance pointer.chapter_id itself;
+        # otherwise it regenerates fresh scenes into the finished chapter, flips it
+        # back to 'active', and loops forever (the post-chapter infinite loop).
+        if not open_scenes:
+            current = sqlite_db.get_row(db, "Chapters", "chapter_id", pointer.chapter_id) or {}
+            if current.get("status") == "completed":
+                remaining = sqlite_db.get_remaining_chapters(db, pointer.arc_id)
+                if not remaining:
+                    # Arc fully planned — arc/END advancement is owned by
+                    # edge_commit_router (steps 4–5), so nothing remains to schedule.
+                    log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "success")
+                    return {"fsm_pointer": pointer}
+                pointer = pointer.model_copy(
+                    update={"chapter_id": remaining[0]["chapter_id"], "scene_id": "", "beat_index": 0}
+                )
+                open_scenes = sqlite_db.get_remaining_scenes(db, pointer.chapter_id)
+
         if open_scenes:
             sqlite_db.set_chapter_status(db, pointer.chapter_id, "active")
             updated = pointer.model_copy(update={"scene_id": open_scenes[0]["scene_id"], "beat_index": 0})
