@@ -41,51 +41,80 @@
     - Branch restore modal submission
 */
 
-/* SSE EventSource setup — shared by every page. Page scripts register
-   handlers on window.fwHandlers; events without a handler are ignored. */
+/* ------------------------------------------------------------------ */
+/* Shared SSE consumer + page-reattach plumbing (all pages)           */
+/* ------------------------------------------------------------------ */
 
 window.fwHandlers = window.fwHandlers || {};
+
+/** Toast notifications — small, self-dismissing, non-blocking. */
+window.fwToast = function fwToast(message, kind = 'info', ttlMs = 4200) {
+  const host = document.getElementById('fw-toasts');
+  if (!host) return;
+  const el = document.createElement('div');
+  el.className = `fw-toast ${kind}`;
+  el.textContent = message;
+  host.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 250ms';
+    setTimeout(() => el.remove(), 260);
+  }, ttlMs);
+};
+
+/** Global nav: highlight the active page + status dot on every page. */
+(function initNav() {
+  const here = window.location.pathname;
+  document.querySelectorAll('[data-nav]').forEach((a) => {
+    const target = a.dataset.nav;
+    if (target === here || (target !== '/' && here.startsWith(target))) a.classList.add('active');
+  });
+})();
+
+/**
+ * Status resync — THE background-persistence contract.
+ * Generation lives server-side in core/generation_manager.py; the page is only
+ * a viewport. On load, on SSE reconnect, and whenever the tab becomes visible
+ * again, we pull GET /status and let pages re-render from authoritative state.
+ */
+window.fwResync = async function fwResync() {
+  try {
+    const res = await fetch('/status');
+    if (!res.ok) return null;
+    const snapshot = await res.json();
+    if (typeof window.fwHandlers.__resync === 'function') window.fwHandlers.__resync(snapshot);
+    const dot = document.getElementById('nav-status-dot');
+    if (dot) dot.style.background = snapshot.running ? 'var(--fw-good)' : 'var(--fw-text-dim)';
+    return snapshot;
+  } catch { return null; }
+};
 
 (function initSse() {
   const source = new EventSource('/stream');
   const dispatch = (raw) => {
     let ev;
     try { ev = JSON.parse(raw); } catch { return; }
-    if (ev.type && typeof window.fwHandlers[ev.type] === 'function') {
-      window.fwHandlers[ev.type](ev);
-    }
+    if (ev.type && typeof window.fwHandlers[ev.type] === 'function') window.fwHandlers[ev.type](ev);
   };
-  // Named SSE events (event: <type>) and unnamed heartbeat frames both route here.
   source.onmessage = (e) => dispatch(e.data);
-  for (const type of ['draft_chunk', 'draft_complete', 'beat_committed', 'word_count',
-                      'status', 'critic_result', 'pad_update', 'drift',
-                      'ingestion_progress', 'ingestion_complete']) {
-    source.addEventListener(type, (e) => dispatch(e.data));
-  }
-  source.onerror = () => {
-    /* EventSource auto-reconnects; surface the state if a status element exists. */
-    const el = document.getElementById('fsm-status');
-    if (el) el.textContent = 'stream reconnecting…';
-  };
-})();
+  for (const type of [
+    'pipeline_status', 'beat_start', 'draft_chunk', 'draft_complete', 'draft_replaced',
+    'beat_committed', 'word_count', 'status', 'critic_result', 'pad_update', 'drift',
+    'generation_complete', 'generation_error', 'ingestion_progress', 'ingestion_complete',
+  ]) source.addEventListener(type, (e) => dispatch(e.data));
 
-/* Auto-scroll with manual-scroll detection */
-(function initAutoScroll() {
-  const host = document.getElementById('prose-stream');
-  if (!host) return;
-  let pinned = true;
-  host.addEventListener('scroll', () => {
-    pinned = host.scrollTop + host.clientHeight >= host.scrollHeight - 24;
+  // The browser auto-reconnects EventSource; after a gap we may have missed
+  // events, so resync from /status on every (re)open and on tab refocus.
+  source.onopen = () => window.fwResync();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) window.fwResync();
   });
-  const observer = new MutationObserver(() => {
-    if (pinned) host.scrollTop = host.scrollHeight;
-  });
-  observer.observe(host, { childList: true, characterData: true, subtree: true });
 })();
 
 /* Bootstrap tooltips (global) */
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(
-    (el) => new bootstrap.Tooltip(el)
-  );
+  if (window.bootstrap) {
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => new bootstrap.Tooltip(el));
+  }
+  window.fwResync();
 });

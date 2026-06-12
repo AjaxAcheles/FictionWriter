@@ -32,15 +32,19 @@
   {% block head %}{% endblock %}
 </head>
 <body>
-  <nav class="navbar navbar-dark bg-dark px-3">
-    <span class="navbar-brand fw-bold">FictionWriter</span>
-    <div class="d-flex gap-2">
-      <a href="/" class="nav-link text-light">Dashboard</a>
-      <a href="/alignment" class="nav-link text-light">Alignment</a>
-      <a href="/settings" class="nav-link text-light">Settings</a>
-      <a href="/codex" class="nav-link text-light">Codex</a>
+  <nav class="navbar navbar-dark fw-nav px-3">
+    <span class="navbar-brand fw-bold fw-brand">Fiction<span class="accent">Writer</span></span>
+    <div class="d-flex gap-1 align-items-center">
+      <a href="/" class="nav-link" data-nav="/">Dashboard</a>
+      <a href="/alignment" class="nav-link" data-nav="/alignment">Alignment</a>
+      <a href="/codex" class="nav-link" data-nav="/codex">Codex</a>
+      <a href="/settings" class="nav-link" data-nav="/settings">Settings</a>
+      <span class="fw-status-dot ms-2" id="nav-status-dot"
+            title="Generation status" aria-label="Generation status"></span>
     </div>
   </nav>
+
+  <div class="fw-toasts" id="fw-toasts" aria-live="polite"></div>
 
   <main class="container-fluid py-3">
     {% block content %}{% endblock %}

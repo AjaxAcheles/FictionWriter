@@ -117,9 +117,7 @@ async def generate():
         JSON response: {"status": "started", "project_id": str}
         HTTP 202 Accepted.
     """
-    import asyncio
-
-    from fsm.graph import compile_graph
+    from core import generation_manager
     from fsm.state import FSM_Pointer
 
     payload = await request.get_json(silent=True) or {}
@@ -145,9 +143,34 @@ async def generate():
         "best_seen_failure_count": None,
     }
 
-    app = compile_graph()
-    asyncio.get_event_loop().create_task(
-        app.ainvoke(initial_state, config={"recursion_limit": 10_000})
-    )
+    if not generation_manager.start(initial_state, project_id=project_id):
+        return {"status": "already_running",
+                "message": "A generation run is already in flight."}, 409
     return {"status": "started", "project_id": project_id}, 202
 
+
+@dashboard_bp.route("/status")
+async def status():
+    """
+    Generation status snapshot — the page-reattach endpoint.
+
+    Purpose:
+        A freshly loaded (or refocused) page calls this to resynchronize with a
+        run that has been progressing in the background: running flag, current
+        pipeline stage label, node count, and committed word total. Combined
+        with GET /codex/manuscript this fully rebuilds UI state after a reload.
+    """
+    from core import generation_manager, runtime
+    from memory import sqlite_db
+
+    snapshot = generation_manager.snapshot()
+    try:
+        snapshot["committed_words"] = sqlite_db.get_total_word_count(runtime.SQLITE_PATH)
+    except Exception:
+        snapshot["committed_words"] = 0
+    from core.config_loader import load_config
+    try:
+        snapshot["word_count_target"] = load_config().project.word_count_target
+    except Exception:
+        snapshot["word_count_target"] = 0
+    return snapshot

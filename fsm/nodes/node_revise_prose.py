@@ -28,7 +28,7 @@ import difflib
 import json
 import time
 
-from core import runtime
+from core import runtime, stream_bus
 from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
@@ -144,9 +144,20 @@ async def node_revise_prose(state: OrchestratorState) -> dict:
             stream=False,
         )
 
+        # Beat lifecycle, step 2: revisions REPLACE the streamed draft. The
+        # frontend swaps the beat block's content instead of appending — stale
+        # text from the superseded draft never lingers on screen.
+        final_text = revised.strip() or draft
+        stream_bus.publish({
+            "type": "draft_replaced",
+            "beat_id": f"{pointer.scene_id}_beat_{pointer.beat_index}",
+            "text": final_text,
+            "revision": state.get("retry_count", 0) + 1,
+        })
+
         log_node_event(logger, pointer.model_dump(), (time.monotonic() - start) * 1000.0, "success")
         return {
-            "current_draft_text": revised.strip() or draft,
+            "current_draft_text": final_text,
             "retry_count": state.get("retry_count", 0) + 1,
             "critic_failures": None,  # explicit clear (append_or_clear reducer)
         }

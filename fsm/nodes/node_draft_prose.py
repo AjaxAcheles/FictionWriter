@@ -46,6 +46,18 @@ async def node_draft_prose(state: OrchestratorState) -> dict:
         prompt = PromptLoader().load_and_render("node_draft_prose.xml.j2", package)
         messages = [{"role": "user", "content": prompt}]
 
+        # Beat lifecycle, step 1: announce which beat the chunks belong to. The
+        # frontend opens a beat block keyed by beat_id; re-announcing the same
+        # beat_id (a redraft after Tier 4) tells it to clear the stale block.
+        beat_id = f"{pointer.scene_id}_beat_{pointer.beat_index}"
+        stream_bus.publish({
+            "type": "beat_start",
+            "beat_id": beat_id,
+            "beat_index": pointer.beat_index,
+            "scene_id": pointer.scene_id,
+            "description": package.get("beat_description", ""),
+        })
+
         chunks: list[str] = []
         async for chunk in call_llm_module.call_llm(
             config.endpoints.drafter,

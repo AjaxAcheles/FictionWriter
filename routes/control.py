@@ -111,7 +111,10 @@ async def stop():
     """
     global hard_stop_asserted
     hard_stop_asserted = True
-    return {"status": "stopped"}
+    from core import generation_manager, stream_bus
+    cancelled = generation_manager.cancel()
+    stream_bus.publish({"type": "status", "status": "stopped"})
+    return {"status": "stopped", "task_cancelled": cancelled}
 
 
 @control_bp.route("/control/patch", methods=["POST"])

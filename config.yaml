@@ -11,8 +11,8 @@
 
 project:
   word_count_target: 2000         # Target manuscript length in words. arc exhaustion check in _commit_router compares SUM(word_count) against this.
-  genre: "historical romance"     # Passed to node_plan_global as the manuscript genre.
-  premise: "Korea, 1950. As the peninsula tears itself in two along the 38th parallel, Yoon Seo-yeon, a schoolteacher's daughter fleeing Seoul with her younger brother, and Park Junho, a quietly principled ROK Army lieutenant from a southern fishing village, find each other in the chaos of the refugee roads. Their love must survive checkpoints, conscription, and the hardening border that threatens to place them on opposite sides of a divided nation forever."
+  genre: "Action Thriller Mystery"     # Passed to node_plan_global as the manuscript genre.
+  premise: "A group of people think they’re on a mission to fix the environment by contracting an alien bacteria that restores ozone (but have amnesia.) They find out later that they actually already completed that mission a while ago and the “alien planet” they’re on is actually earth years later after the bacteria infected earth and took over."
 
 log_level: "DEBUG"                   # Logging verbosity for fsm.log. Options: DEBUG, INFO, WARNING, ERROR.
 

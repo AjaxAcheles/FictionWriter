@@ -2,22 +2,36 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
+<!-- Pipeline status bar: the user is NEVER left guessing what the FSM is doing. -->
+<div class="fw-statusbar mb-3" id="statusbar" data-running="false" role="status">
+  <span class="fw-status-dot" aria-hidden="true"></span>
+  <span class="fw-spinner" aria-hidden="true"></span>
+  <span class="fw-stage-label" id="stage-label">Idle</span>
+  <div class="fw-progress" title="Committed words vs target"><div id="word-progress"></div></div>
+  <span class="fw-meta"><span id="word-count">0</span> / <span id="word-target">…</span> words</span>
+  <span class="fw-meta" id="beat-counter">beat —</span>
+  <span class="fw-meta" id="elapsed">00:00</span>
+  <div class="btn-group btn-group-sm ms-auto">
+    <button class="btn btn-success" id="btn-generate">Generate</button>
+    <button class="btn btn-outline-warning" id="btn-pause">Pause</button>
+    <button class="btn btn-outline-info" id="btn-resume">Resume</button>
+    <button class="btn btn-outline-danger" id="btn-stop">Hard Stop</button>
+  </div>
+</div>
+
 <div class="row g-3">
-  <!-- Prose stream column -->
+  <!-- Story stream -->
   <div class="col-lg-8">
     <div class="card h-100">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Live Prose Stream</span>
-        <div class="btn-group btn-group-sm">
-          <button class="btn btn-success" id="btn-generate">Generate</button>
-          <button class="btn btn-warning" id="btn-pause">Pause</button>
-          <button class="btn btn-info" id="btn-resume">Resume</button>
-          <button class="btn btn-danger" id="btn-stop">Hard Stop</button>
-        </div>
+        <span>Story Stream</span>
+        <span class="fw-meta" id="stream-hint">live</span>
       </div>
-      <div class="card-body prose-stream" id="prose-stream" aria-live="polite"></div>
-      <div class="card-footer text-secondary small">
-        <span id="fsm-status">idle</span> · <span id="word-count">0</span> words committed
+      <div class="card-body prose-stream" id="prose-stream" aria-live="polite">
+        <div class="fw-empty" id="stream-empty">
+          No prose yet. Press <strong>Generate</strong> to begin —
+          generation keeps running in the background even if you leave this page.
+        </div>
       </div>
     </div>
   </div>
@@ -26,18 +40,18 @@
   <div class="col-lg-4 d-flex flex-column gap-3">
     <div class="card">
       <div class="card-header">PAD Emotional State</div>
-      <div class="card-body"><canvas id="pad-radar" height="220"></canvas></div>
+      <div class="card-body"><canvas id="pad-radar" height="210"></canvas></div>
     </div>
     <div class="card">
       <div class="card-header" data-bs-toggle="tooltip"
            title="STEL cosine distance gates routing; Burrows' Delta is advisory only.">
         Stylometric Drift
       </div>
-      <div class="card-body"><canvas id="drift-chart" height="180"></canvas></div>
+      <div class="card-body"><canvas id="drift-chart" height="160"></canvas></div>
     </div>
     <div class="card">
-      <div class="card-header">Critic Feed</div>
-      <div class="card-body small" id="critic-feed" style="max-height:180px;overflow-y:auto"></div>
+      <div class="card-header">Pipeline Activity</div>
+      <div class="card-body fw-feed" id="activity-feed"></div>
     </div>
   </div>
 </div>
