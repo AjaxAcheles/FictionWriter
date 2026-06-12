@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from core import runtime
 from core.config_loader import load_config
@@ -80,6 +80,14 @@ class BeatPlanList(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     beats: List[PlannedBeat]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data):
+        """Bare array → treat as the beats list (tolerance shim)."""
+        if isinstance(data, list):
+            return {"beats": data}
+        return data
 
 
 def load_pad_regions() -> dict:

@@ -25,7 +25,9 @@
     - Top-level arc names, descriptions, and estimated word allocations.
     - Subplot thread identifiers that will be tracked in the Threads table.
     - The density model's recommended chapter count range per arc.
-    Format: JSON object matching the Arc schema for SQLite insertion.
+    Format: a single JSON OBJECT matching fsm GlobalPlan exactly:
+    {"arcs": [{"id", "title", "description", "word_allocation"}],
+     "threads": [{"id", "name", "description", "priority"}]}
 #}
 
 <prompt>
@@ -48,10 +50,28 @@
   </context>
 
   <instruction>
-    Generate a master arc plan. For each arc provide: id, description, status (planned),
-    estimated_word_count, subplot_threads (list of thread ids to open/close), and
-    recommended_chapter_count_range (min, max). Ensure all arcs together sum to
-    approximately {{ word_count_target }} words.
+    Generate a master arc plan as a SINGLE JSON OBJECT with exactly two top-level
+    keys: "arcs" and "threads". Do NOT output a bare array. Do NOT wrap the JSON
+    in markdown code fences.
+
+    "arcs": a list of arc objects, each with exactly these fields:
+      "id": string slug (e.g. "arc_1"),
+      "title": short string,
+      "description": 1-3 sentence summary of the arc's narrative movement,
+      "word_allocation": integer — words allotted to this arc.
+    All word_allocation values together must sum to approximately
+    {{ word_count_target }}.
+
+    "threads": a list of subplot thread objects to track across the manuscript,
+    each with exactly these fields:
+      "id": string slug (e.g. "th_letters"),
+      "name": short string,
+      "description": one sentence stating the thread's required resolution,
+      "priority": float 0.0-1.0.
+
+    Example shape (structure only):
+    {"arcs": [{"id": "arc_1", "title": "...", "description": "...", "word_allocation": 1000}],
+     "threads": [{"id": "th_1", "name": "...", "description": "...", "priority": 0.8}]}
     {% if existing_arcs %}
     The existing arcs are already committed. Generate only continuation arcs that extend
     the story naturally from where it left off.

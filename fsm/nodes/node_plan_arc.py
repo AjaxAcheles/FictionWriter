@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from typing import List
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from core import runtime
 from core.config_loader import load_config
@@ -56,6 +56,14 @@ class ArcPlan(BaseModel):
 
     chapter_stubs: List[ChapterStub]
     thread_events: List[ThreadEvent] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data):
+        """Bare array → treat as the chapter_stubs list (tolerance shim)."""
+        if isinstance(data, list):
+            return {"chapter_stubs": data, "thread_events": []}
+        return data
 
 
 def apply_thread_event(db, event: ThreadEvent) -> None:

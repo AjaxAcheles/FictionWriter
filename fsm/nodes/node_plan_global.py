@@ -20,7 +20,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from core import runtime
 from core.config_loader import load_config
@@ -37,9 +37,14 @@ class PlannedArc(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    title: str
-    description: str = ""
-    word_allocation: int = 0
+    # Small local models drift on key names — accept the common variants rather
+    # than burning validation retries on synonyms.
+    title: str = Field(validation_alias=AliasChoices("title", "name"))
+    description: str = Field(default="", validation_alias=AliasChoices("description", "summary"))
+    word_allocation: int = Field(
+        default=0,
+        validation_alias=AliasChoices("word_allocation", "estimated_word_count", "word_count"),
+    )
     chapter_count_range: Optional[str] = None
 
 
@@ -59,6 +64,18 @@ class GlobalPlan(BaseModel):
 
     arcs: List[PlannedArc]
     threads: List[PlannedThread] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data):
+        """
+        Tolerance shim: models told to emit an arc plan frequently return the
+        bare ARRAY of arcs instead of the documented wrapper object. Wrapping it
+        here turns a guaranteed StructuredOutputError into a clean parse.
+        """
+        if isinstance(data, list):
+            return {"arcs": data, "threads": []}
+        return data
 
 
 async def node_plan_global(state: OrchestratorState) -> dict:

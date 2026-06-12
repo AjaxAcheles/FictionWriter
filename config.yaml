@@ -10,7 +10,9 @@
 # All hardcoded numeric thresholds in the Python codebase are references to keys here.
 
 project:
-  word_count_target: 300000         # Target manuscript length in words. arc exhaustion check in _commit_router compares SUM(word_count) against this.
+  word_count_target: 2000         # Target manuscript length in words. arc exhaustion check in _commit_router compares SUM(word_count) against this.
+  genre: "historical romance"     # Passed to node_plan_global as the manuscript genre.
+  premise: "Korea, 1950. As the peninsula tears itself in two along the 38th parallel, Yoon Seo-yeon, a schoolteacher's daughter fleeing Seoul with her younger brother, and Park Junho, a quietly principled ROK Army lieutenant from a southern fishing village, find each other in the chaos of the refugee roads. Their love must survive checkpoints, conscription, and the hardening border that threatens to place them on opposite sides of a divided nation forever."
 
 log_level: "DEBUG"                   # Logging verbosity for fsm.log. Options: DEBUG, INFO, WARNING, ERROR.
 
@@ -48,7 +50,7 @@ endpoints:
   planner:                          # High-tier large model. Used by node_plan_global, node_plan_arc, node_plan_chapter.
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "llama3.3:70b"
+    model_name: "gemma4:e4b"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -57,7 +59,7 @@ endpoints:
   drafter:                          # Mid-to-large-tier model. Used by node_draft_prose, node_revise_prose.
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "llama3.3:70b"
+    model_name: "gemma4:e4b"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -66,7 +68,7 @@ endpoints:
   critic:                           # High-tier model. Used by node_adversarial_critics (all 3 critic calls).
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "llama3.3:70b"
+    model_name: "gemma4:e4b"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -75,7 +77,7 @@ endpoints:
   pad_translator:                   # Fast small-tier model. Used by node_plan_beat PAD Grounded Translation Pipeline (step 3).
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "llama3.1:8b"
+    model_name: "gemma4:e4b"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -84,7 +86,7 @@ endpoints:
   craft_consultant:                 # Small-to-mid-tier diagnostic model. Used by node_craft_consultant deadlock breaker.
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "llama3.1:8b"
+    model_name: "gemma4:e4b"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false

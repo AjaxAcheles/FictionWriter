@@ -24,7 +24,7 @@ import json
 import time
 from typing import List
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from core import runtime
 from core.config_loader import load_config
@@ -56,6 +56,14 @@ class ChapterPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     scenes: List[PlannedScene]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data):
+        """Bare array → treat as the scenes list (tolerance shim)."""
+        if isinstance(data, list):
+            return {"scenes": data}
+        return data
 
 
 async def node_plan_chapter(state: OrchestratorState) -> dict:

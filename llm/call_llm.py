@@ -253,18 +253,23 @@ _FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
 
 def _extract_first_json_object(text: str) -> Optional[str]:
     """
-    Lenient extraction pass: strip markdown fences, return the first balanced {...}.
+    Lenient extraction pass: strip markdown fences, return the first balanced
+    JSON VALUE — object {...} or array [...].
 
     Purpose:
-        The cap-exhaustion fallback for the bounded schema-validation sequence.
-        Walks the text character-by-character tracking brace depth and JSON string
-        context (so braces inside string literals don't unbalance the scan).
+        The fallback for the bounded schema-validation sequence. Walks the text
+        character-by-character tracking bracket depth and JSON string context
+        (so brackets inside string literals don't unbalance the scan). Arrays
+        are included because schema models carry bare-list tolerance shims
+        (e.g. GlobalPlan wraps a bare arc array) — an extracted array can still
+        validate.
 
     Outputs:
-        The first balanced JSON object substring, or None if none exists.
+        The first balanced JSON object/array substring, or None if none exists.
     """
     cleaned = _FENCE_RE.sub("", text)
-    depth = 0
+    open_to_close = {"{": "}", "[": "]"}
+    stack: list[str] = []
     start_idx: Optional[int] = None
     in_string = False
     escaped = False
@@ -278,16 +283,16 @@ def _extract_first_json_object(text: str) -> Optional[str]:
                 in_string = False
             continue
         if ch == '"':
-            in_string = True
-        elif ch == "{":
-            if depth == 0:
+            if stack:
+                in_string = True
+        elif ch in open_to_close:
+            if not stack:
                 start_idx = i
-            depth += 1
-        elif ch == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0:
-                    return cleaned[start_idx : i + 1]
+            stack.append(open_to_close[ch])
+        elif stack and ch == stack[-1]:
+            stack.pop()
+            if not stack:
+                return cleaned[start_idx : i + 1]
     return None
 
 
@@ -344,7 +349,16 @@ async def call_llm_structured(
         try:
             return schema_model.model_validate_json(last_response)
         except ValidationError:
-            continue
+            pass
+        # Cheap in-attempt tolerance before burning another LLM call: models
+        # routinely wrap valid JSON in markdown fences or stray prose. The
+        # extraction is pure string work — loop safety is unchanged.
+        extracted = _extract_first_json_object(last_response)
+        if extracted is not None:
+            try:
+                return schema_model.model_validate_json(extracted)
+            except ValidationError:
+                continue
 
     extracted = _extract_first_json_object(last_response)
     if extracted is not None:

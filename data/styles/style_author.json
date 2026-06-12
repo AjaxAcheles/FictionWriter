@@ -1,0 +1,11 @@
+{
+  "is_frozen": false,
+  "frozen_baseline": {
+    "burrows_delta": [],
+    "stel": []
+  },
+  "rolling_ema": {
+    "burrows_delta": [],
+    "stel": []
+  }
+}
