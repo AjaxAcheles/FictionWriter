@@ -141,6 +141,9 @@ async def reset_resources(config: AppConfig) -> None:
 
     EVENT_LOG_PATH.unlink(missing_ok=True)
 
+    for log_file in LOGS_DIR.glob("*.log"):
+        log_file.write_text("", encoding="utf-8")
+
     reset_collections(DATA_DIR)
 
     for style_file in STYLES_DIR.glob("*.json"):
