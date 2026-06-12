@@ -85,4 +85,5 @@ def confirm(claim_id: str) -> bool:
 
 
 def contradict(claim_id: str) -> bool:
-    """Drop 
+    """Drop a claim permanently. False if unknown."""
+    return _set_status(claim_id, "contradicted")
