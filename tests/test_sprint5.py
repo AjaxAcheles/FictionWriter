@@ -182,6 +182,12 @@ async def test_codex_manuscript_assembly_order(env, client):
     text = (await response.get_data()).decode()
     assert text.index("First scene prose.") < text.index("Second scene prose.")
 
+    # Structured form (?format=json) — used by dashboard hydration.
+    scenes = await (await client.get("/codex/manuscript?format=json")).get_json()
+    assert [s["scene_id"] for s in scenes] == ["sc_001", "sc_002"]
+    assert scenes[0]["text"] == "First scene prose."
+    assert scenes[0]["chapter_id"] == "ch_001"
+
 
 async def test_codex_restore_requires_pause(env, client, monkeypatch):
     from memory import branch_manager

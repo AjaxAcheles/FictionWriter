@@ -74,8 +74,22 @@ def is_running() -> bool:
 
 
 def snapshot() -> dict:
-    """Current status snapshot for GET /status and page-reattach."""
-    return dict(_status)
+    """
+    Current status snapshot for GET /status and page-reattach.
+
+    elapsed_s is computed server-side so the frontend timer never depends on
+    the browser parsing started_at (timezone/format skew across clients).
+    """
+    snap = dict(_status)
+    if snap["running"] and snap["started_at"]:
+        try:
+            started = datetime.fromisoformat(snap["started_at"])
+            snap["elapsed_s"] = max(
+                0, int((datetime.now(timezone.utc) - started).total_seconds())
+            )
+        except ValueError:
+            snap["elapsed_s"] = None
+    return snap
 
 
 def _set(**fields) -> None:

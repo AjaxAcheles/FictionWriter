@@ -138,13 +138,21 @@ async def restore_branch():
 
 @codex_bp.route("/codex/manuscript")
 async def get_manuscript():
-    """Assembled manuscript prose (optionally one chapter), reading order."""
+    """
+    Assembled manuscript (optionally one chapter), reading order.
+
+    Default: plain text (legacy consumers, tests). With ?format=json: one
+    structured record per committed scene so the dashboard can rebuild the
+    timeline/outline with real scene identity instead of guessing block
+    boundaries from paragraph splits.
+    """
     from core import runtime
     from memory import sqlite_db
 
     chapter_id = request.args.get("chapter_id")
     query = (
-        "SELECT s.prose_text FROM Scenes s "
+        "SELECT s.scene_id, s.chapter_id, s.description, s.prose_text, s.word_count "
+        "FROM Scenes s "
         "JOIN Chapters c ON s.chapter_id = c.chapter_id "
         "JOIN Arcs a ON c.arc_id = a.arc_id "
         "WHERE s.prose_text IS NOT NULL "
@@ -156,7 +164,15 @@ async def get_manuscript():
     query += "ORDER BY a.created_at ASC, c.chapter_index ASC, s.scene_index ASC"
     with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
         rows = conn.execute(query, params).fetchall()
-    text = "\n\n".join((r[0] or "").strip() for r in rows if r[0])
+
+    if request.args.get("format") == "json":
+        return [
+            {"scene_id": r["scene_id"], "chapter_id": r["chapter_id"],
+             "description": r["description"] or "", "text": (r["prose_text"] or "").strip(),
+             "word_count": r["word_count"]}
+            for r in rows if r["prose_text"]
+        ]
+    text = "\n\n".join((r["prose_text"] or "").strip() for r in rows if r["prose_text"])
     return Response(text, content_type="text/plain; charset=utf-8")
 
 
@@ -182,8 +198,7 @@ async def get_raptor_tree():
 async def get_events():
     """Most recent event-log records (virtualized panel; newest first)."""
     from core import runtime
-    from memory.event_log import iter_events
+    from memory.event_log import tail_events
 
     limit = int(request.args.get("limit", 200))
-    events = list(iter_events(runtime.EVENT_LOG_PATH)) if runtime.EVENT_LOG_PATH.exists() else []
-    return events[-limit:][::-1]
+    return tail_events(runtime.EVENT_LOG_PATH, limit)[::-1]

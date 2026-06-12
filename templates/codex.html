@@ -32,8 +32,22 @@
 <script>
 const levelNames = {0: 'beat', 1: 'scene', 2: 'chapter', 3: 'arc', 4: 'global'};
 
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function renderLoadError(hostId, what, err) {
+  document.getElementById(hostId).innerHTML =
+    `<p class="text-danger small">Failed to load ${what} — ${err.message}. Reload the page to retry.</p>`;
+  window.fwToast(`Failed to load ${what}: ${err.message}`, 'error');
+}
+
 async function loadCharacters() {
-  const chars = await (await fetch('/codex/characters')).json();
+  let chars;
+  try { chars = await fetchJson('/codex/characters'); }
+  catch (err) { renderLoadError('characters-host', 'characters', err); return; }
   const host = document.getElementById('characters-host');
   host.innerHTML = chars.length ? '' : '<p class="text-secondary">No characters yet.</p>';
   for (const c of chars) {
@@ -49,7 +63,9 @@ async function loadCharacters() {
 }
 
 async function loadThreads() {
-  const threads = await (await fetch('/codex/threads')).json();
+  let threads;
+  try { threads = await fetchJson('/codex/threads'); }
+  catch (err) { renderLoadError('threads-host', 'threads', err); return; }
   const host = document.getElementById('threads-host');
   host.innerHTML = '';
   for (const status of ['open', 'progressing', 'closed']) {
@@ -67,27 +83,40 @@ async function loadThreads() {
 }
 
 async function loadRaptor() {
-  const nodes = await (await fetch('/codex/raptor')).json();
+  let nodes;
+  try { nodes = await fetchJson('/codex/raptor'); }
+  catch (err) { renderLoadError('raptor-host', 'RAPTOR tree', err); return; }
   const host = document.getElementById('raptor-host');
   host.innerHTML = nodes.length ? '' : '<li class="text-secondary">RAPTOR tree is empty.</li>';
   for (const n of nodes) {
     const li = document.createElement('li');
     li.className = 'breadcrumb-item';
     li.innerHTML = `<span class="badge bg-dark border">${levelNames[n.level] || n.level}</span>
-      <code>${n.node_id}</code><div class="small text-secondary">${n.summary_text.slice(0, 240)}</div>`;
+      <code>${n.node_id}</code><div class="small text-secondary">${(n.summary_text || 'No summary yet').slice(0, 240)}</div>`;
     host.appendChild(li);
   }
 }
 
 async function loadEvents() {
-  const events = await (await fetch('/codex/events?limit=200')).json();
-  document.getElementById('events-host').innerHTML =
-    events.map(e => `<div class="${e.type === 'beat_commit' ? '' : 'text-warning'}">${JSON.stringify(e)}</div>`).join('')
-    || '<span class="text-secondary">Event log is empty.</span>';
+  let events;
+  try { events = await fetchJson('/codex/events?limit=200'); }
+  catch (err) { renderLoadError('events-host', 'event log', err); return; }
+  const host = document.getElementById('events-host');
+  host.innerHTML = events.length ? '' : '<span class="text-secondary">Event log is empty.</span>';
+  for (const e of events) {
+    const pre = document.createElement('pre');
+    pre.className = `mb-2 p-2 border rounded ${e.type === 'beat_commit' || e.event === 'beat_commit' ? '' : 'text-warning'}`;
+    const code = document.createElement('code');
+    code.textContent = JSON.stringify(e, null, 2);
+    pre.appendChild(code);
+    host.appendChild(pre);
+  }
 }
 
 async function loadBranches() {
-  const branches = await (await fetch('/codex/branches')).json();
+  let branches;
+  try { branches = await fetchJson('/codex/branches'); }
+  catch (err) { renderLoadError('branches-host', 'branches', err); return; }
   const host = document.getElementById('branches-host');
   host.innerHTML = branches.length ? '' : '<p class="text-secondary">No snapshots yet (created at chapter boundaries).</p>';
   for (const b of branches) {
@@ -107,13 +136,29 @@ document.getElementById('branches-host').addEventListener('click', async (e) => 
   const btn = e.target.closest('button[data-restore]');
   if (!btn) return;
   const reasons = btn.closest('.input-group').querySelector('[data-reason]').value || null;
-  const res = await fetch('/codex/restore', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({snapshot_filename: btn.dataset.restore, reasons}),
-  });
-  const data = await res.json();
-  alert(data.status === 'restored' ? `Restored ${data.snapshot}` : data.message);
+  try {
+    const res = await fetch('/codex/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({snapshot_filename: btn.dataset.restore, reasons}),
+    });
+    const data = await res.json();
+    if (data.status === 'restored') window.fwToast(`Restored ${data.snapshot}`, 'info');
+    else window.fwToast(data.message || `Restore failed (HTTP ${res.status})`, 'error', 8000);
+  } catch (err) {
+    window.fwToast(`Restore failed: ${err.message}`, 'error', 8000);
+  }
 });
+
+// Remember the active tab across navigation (Bootstrap tabs reset on reload).
+const TAB_KEY = 'fw-codex-tab';
+document.querySelectorAll('[data-bs-toggle="tab"]').forEach((btn) => {
+  btn.addEventListener('shown.bs.tab', (e) => localStorage.setItem(TAB_KEY, e.target.dataset.bsTarget));
+});
+const savedTab = localStorage.getItem(TAB_KEY);
+if (savedTab && document.querySelector(savedTab)) {
+  const trigger = document.querySelector(`[data-bs-target="${savedTab}"]`);
+  if (trigger) bootstrap.Tab.getOrCreateInstance(trigger).show();
+}
 
 loadCharacters(); loadThreads(); loadRaptor(); loadEvents(); loadBranches();
 </script>

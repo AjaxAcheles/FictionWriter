@@ -107,6 +107,55 @@ def iter_events(log_path: Path) -> Iterator[dict]:
                 yield json.loads(line)
 
 
+def tail_events(log_path: Path, limit: int) -> list[dict]:
+    """
+    Return the last `limit` events in chronological order without reading the
+    whole file.
+
+    Purpose:
+        Memory-safe tail read for the Codex events panel. The log grows without
+        bound over a long generation run; loading every line just to slice the
+        last N (as list(iter_events())[-N:] does) is O(file) memory. This reads
+        fixed-size blocks backwards from EOF until `limit` complete lines are
+        buffered, so memory is O(limit · line_length).
+
+    Inputs:
+        log_path: Path — path to the .jsonl file.
+        limit: int — maximum number of trailing events to return.
+
+    Outputs:
+        list[dict]: Up to `limit` deserialized events, oldest first. Lines that
+            fail to parse (e.g., a torn write at a crash point) are skipped.
+    """
+    if limit <= 0 or not log_path.exists():
+        return []
+    block_size = 64 * 1024
+    with log_path.open("rb") as f:
+        f.seek(0, 2)
+        pos = f.tell()
+        buffer = b""
+        # Each complete line ends with \n; limit+1 newlines guarantee at least
+        # `limit` complete lines even when the buffer starts mid-line.
+        while pos > 0 and buffer.count(b"\n") <= limit:
+            read_size = min(block_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            buffer = f.read(read_size) + buffer
+    lines = buffer.split(b"\n")
+    if pos > 0:
+        lines = lines[1:]  # first element is a partial line cut by the block boundary
+    events = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            events.append(json.loads(raw.decode("utf-8")))
+        except (ValueError, UnicodeDecodeError):
+            continue
+    return events[-limit:]
+
+
 def iter_events_after_checkpoint(
     log_path: Path,
     checkpoint_beat_id: str,

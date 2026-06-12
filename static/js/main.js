@@ -85,9 +85,27 @@ window.fwResync = async function fwResync() {
     'generation_complete', 'generation_error', 'ingestion_progress', 'ingestion_complete',
   ]) source.addEventListener(type, (e) => dispatch(e.data));
 
+  // Surface SSE drops: red status dot + one toast per disconnect episode
+  // (onerror refires on every reconnect attempt — don't spam).
+  let sseDown = false;
+  source.onerror = () => {
+    const dot = document.getElementById('nav-status-dot');
+    if (dot) dot.style.background = 'var(--fw-bad)';
+    if (!sseDown) {
+      sseDown = true;
+      window.fwToast('Live connection lost — reconnecting…', 'error');
+    }
+  };
+
   // The browser auto-reconnects EventSource; after a gap we may have missed
   // events, so resync from /status on every (re)open and on tab refocus.
-  source.onopen = () => window.fwResync();
+  source.onopen = () => {
+    if (sseDown) {
+      sseDown = false;
+      window.fwToast('Live connection restored.', 'info');
+    }
+    window.fwResync();
+  };
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) window.fwResync();
   });

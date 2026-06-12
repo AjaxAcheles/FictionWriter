@@ -171,6 +171,44 @@ def test_event_log_write_and_read(tmp_path):
     assert recovered == events
 
 
+def test_event_log_tail_events(tmp_path):
+    """
+    Assert tail_events returns the last N events in chronological order.
+
+    Purpose:
+        Verifies the memory-safe backward tail read used by GET /codex/events:
+        correct slice and ordering when limit < total, limit > total (whole
+        file), limit <= 0 (empty), missing file (empty), and resilience to a
+        torn final line (crash artifact) — the partial line is skipped, the
+        complete lines before it are still returned. Payloads larger than the
+        64 KiB read block exercise the multi-block backward scan.
+
+    Inputs:
+        tmp_path: pytest fixture.
+
+    Expected:
+        tail_events(path, 3) == last three written events, oldest first.
+    """
+    from memory.event_log import tail_events, write_event
+
+    log_path = tmp_path / "event_log.jsonl"
+    assert tail_events(log_path, 5) == []
+
+    events = [{"event": "beat_commit", "beat_id": f"b{i}", "prose_delta": "x" * 40_000}
+              for i in range(6)]
+    for e in events:
+        write_event(log_path, e)
+
+    assert tail_events(log_path, 3) == events[-3:]
+    assert tail_events(log_path, 100) == events
+    assert tail_events(log_path, 0) == []
+
+    # Torn final line (simulated crash mid-write): skipped, rest intact.
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write('{"event": "beat_commit", "beat_id": "torn"')
+    assert tail_events(log_path, 2) == events[-2:]
+
+
 def test_programmatic_fast_path_triggers():
     """
     Assert edge_programmatic_router returns "node_commit_transaction" for a clean state.

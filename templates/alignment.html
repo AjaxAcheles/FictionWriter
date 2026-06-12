@@ -35,8 +35,17 @@
 {% block scripts %}
 <script>
 async function loadClaims() {
-  const res = await fetch('/alignment/claims');
-  const claims = await res.json();
+  let claims;
+  try {
+    const res = await fetch('/alignment/claims');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    claims = await res.json();
+  } catch (err) {
+    document.getElementById('claim-cards').innerHTML =
+      `<p class="text-danger small">Failed to load claims — ${err.message}. Use Reload to retry.</p>`;
+    window.fwToast(`Failed to load claims: ${err.message}`, 'error');
+    return;
+  }
   document.getElementById('pending-count').textContent = claims.length;
   const host = document.getElementById('claim-cards');
   host.innerHTML = claims.length ? '' : '<p class="text-secondary">No pending claims.</p>';
@@ -63,19 +72,35 @@ async function loadClaims() {
 document.getElementById('claim-cards').addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
-  await fetch(`/alignment/${btn.dataset.act}`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({claim_id: btn.dataset.id}),
-  });
+  try {
+    const res = await fetch(`/alignment/${btn.dataset.act}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({claim_id: btn.dataset.id}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    window.fwToast(`Failed to ${btn.dataset.act} claim: ${err.message}`, 'error');
+    return;
+  }
   loadClaims();
 });
 document.getElementById('btn-reload-claims').addEventListener('click', loadClaims);
 document.getElementById('ingest-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const res = await fetch('/alignment/ingest', {method: 'POST', body: new FormData(e.target)});
-  const data = await res.json();
-  document.getElementById('ingest-status').textContent =
-    data.status === 'ingestion_started' ? `Ingesting ${data.file}…` : (data.message || 'error');
+  try {
+    const res = await fetch('/alignment/ingest', {method: 'POST', body: new FormData(e.target)});
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 'ingestion_started') {
+      document.getElementById('ingest-status').textContent = `Ingesting ${data.file}…`;
+    } else {
+      const msg = data.message || `HTTP ${res.status}`;
+      document.getElementById('ingest-status').textContent = msg;
+      window.fwToast(`Ingestion failed: ${msg}`, 'error');
+    }
+  } catch (err) {
+    document.getElementById('ingest-status').textContent = `Ingestion failed: ${err.message}`;
+    window.fwToast(`Ingestion failed: ${err.message}`, 'error');
+  }
 });
 loadClaims();
 </script>

@@ -231,6 +231,12 @@
   let autoScroll = true;
   canvas.addEventListener('scroll', () => {
     autoScroll = canvas.scrollTop + canvas.clientHeight >= canvas.scrollHeight - 48;
+    // The popover is fixed-positioned at the dot's coordinates; scrolling
+    // detaches it from its anchor — hide instead of floating free.
+    if (!popover.hidden) {
+      popover.hidden = true;
+      popoverDot = null;
+    }
   });
   function pinScroll() {
     if (autoScroll) canvas.scrollTop = canvas.scrollHeight;
@@ -430,7 +436,12 @@
       setRunning(snap.running);
       setStage(snap.stage_label || (snap.running ? 'Working…' : 'Idle'), PHASE[snap.stage] || '');
       setWords(snap.committed_words ?? 0, snap.word_count_target);
-      if (snap.running && snap.started_at) startedAt = Date.parse(snap.started_at);
+      if (snap.running) {
+        // Prefer the server-computed elapsed_s — immune to browser timezone
+        // or ISO-format parsing skew; started_at parse is the fallback.
+        if (typeof snap.elapsed_s === 'number') startedAt = Date.now() - snap.elapsed_s * 1000;
+        else if (snap.started_at) startedAt = Date.parse(snap.started_at);
+      }
       if (snap.last_error) feed(`Last error: ${snap.last_error}`, 'bad');
     },
   });
@@ -461,7 +472,11 @@
   $('btn-pause').addEventListener('click', async () => { await post('/control/pause'); });
   $('btn-resume').addEventListener('click', async () => { await post('/control/resume'); });
   $('btn-stop').addEventListener('click', async () => {
-    const [, body] = await post('/control/stop');
+    const [code, body] = await post('/control/stop');
+    if (code !== 200 && code !== 202) {
+      if (code !== 0) window.fwToast(`Stop failed (HTTP ${code})`, 'error');
+      return; // post() already toasted on network failure (code 0)
+    }
     setRunning(false);
     setStage('Stopped');
     window.fwToast(body.task_cancelled ? 'Generation task cancelled.' : 'Stop signal sent.', 'warn');
@@ -471,14 +486,24 @@
 
   (async () => {
     // Rebuild committed prose so a reload never shows an empty screen mid-run.
+    // Structured per-scene records restore real scene identity in the
+    // timeline/outline instead of guessing block boundaries from \n\n splits.
     try {
-      const res = await fetch('/codex/manuscript');
-      const text = (await res.text()).trim();
-      if (text) {
+      const res = await fetch('/codex/manuscript?format=json');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const scenes = await res.json();
+      if (scenes.length) {
         $('stream-empty')?.remove();
-        text.split(/\n\n+/).forEach((para, i) => {
-          beatBlock(`committed_${i}`, { description: 'committed prose', state: 'committed', text: para });
-        });
+        for (const s of scenes) {
+          beatBlock(`scene_${s.scene_id}`, {
+            description: s.description || s.scene_id,
+            sceneId: s.scene_id,
+            state: 'committed',
+            text: s.text,
+          });
+        }
+        const last = scenes[scenes.length - 1];
+        $('timeline-chapter').textContent = last.chapter_id || last.scene_id;
         pinScroll();
       }
     } catch { /* manuscript endpoint empty/unavailable — fine on first run */ }

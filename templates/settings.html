@@ -80,9 +80,36 @@
 
 {% block scripts %}
 <script>
+// Submit via fetch — a native form post would render the JSON response as a page.
+document.getElementById('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/settings', {method: 'POST', body: new FormData(e.target)});
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.status === 'updated') {
+      window.fwToast('Settings saved — applies at the next beat boundary.', 'info');
+    } else {
+      window.fwToast(`Save failed: ${data.message || `HTTP ${res.status}`}`, 'error', 8000);
+    }
+  } catch (err) {
+    window.fwToast(`Save failed: ${err.message}`, 'error', 8000);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.getElementById('btn-test-endpoints')?.addEventListener('click', async () => {
-  const res = await fetch('/settings/test', {method: 'POST'});
-  const data = await res.json();
+  let data;
+  try {
+    const res = await fetch('/settings/test', {method: 'POST'});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    window.fwToast(`Connectivity test failed: ${err.message}`, 'error');
+    return;
+  }
   document.querySelectorAll('.endpoint-status').forEach(el => {
     const status = data[el.dataset.role];
     el.style.color = status && status.ok ? '#3fb950' : '#f85149';
