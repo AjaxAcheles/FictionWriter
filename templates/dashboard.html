@@ -1,58 +1,119 @@
 {% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
+{% block title %}Mission Control{% endblock %}
+{% block body_class %}fw-workspace-mode{% endblock %}
 
 {% block content %}
-<!-- Pipeline status bar: the user is NEVER left guessing what the FSM is doing. -->
-<div class="fw-statusbar mb-3" id="statusbar" data-running="false" role="status">
-  <span class="fw-status-dot" aria-hidden="true"></span>
-  <span class="fw-spinner" aria-hidden="true"></span>
-  <span class="fw-stage-label" id="stage-label">Idle</span>
-  <div class="fw-progress" title="Committed words vs target"><div id="word-progress"></div></div>
-  <span class="fw-meta"><span id="word-count">0</span> / <span id="word-target">…</span> words</span>
-  <span class="fw-meta" id="beat-counter">beat —</span>
-  <span class="fw-meta" id="elapsed">00:00</span>
-  <div class="btn-group btn-group-sm ms-auto">
-    <button class="btn btn-success" id="btn-generate">Generate</button>
-    <button class="btn btn-outline-warning" id="btn-pause">Pause</button>
-    <button class="btn btn-outline-info" id="btn-resume">Resume</button>
-    <button class="btn btn-outline-danger" id="btn-stop">Hard Stop</button>
-  </div>
-</div>
+<!--
+  Mission Control workspace — fixed viewport, three panes + bottom dock.
+  The page never scrolls globally; only #canvas-scroll, the rails, the
+  Glass Engine, and the activity feed scroll internally.
+-->
+<div class="fw-workspace" id="workspace">
 
-<div class="row g-3">
-  <!-- Story stream -->
-  <div class="col-lg-8">
-    <div class="card h-100">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Story Stream</span>
-        <span class="fw-meta" id="stream-hint">live</span>
+  <!-- ============ LEFT RAIL — context & navigation ============ -->
+  <aside class="fw-rail fw-left-rail" id="left-rail" aria-label="Navigation and outline">
+    <div class="fw-rail-brand">Fiction<span class="accent">Writer</span></div>
+
+    <nav class="fw-rail-nav">
+      <a href="/" class="fw-rail-link" data-nav="/">Mission Control</a>
+      <a href="/alignment" class="fw-rail-link" data-nav="/alignment">Alignment</a>
+      <a href="/codex" class="fw-rail-link" data-nav="/codex">Codex</a>
+      <a href="/settings" class="fw-rail-link" data-nav="/settings">Settings</a>
+    </nav>
+
+    <div class="fw-rail-section">
+      <h6 class="fw-rail-heading">Outline</h6>
+      <!-- RAPTOR tree outline — populated by JS as beats arrive. -->
+      <div class="fw-outline" id="raptor-outline">
+        <div class="fw-outline-empty" id="outline-empty">No structure yet.</div>
       </div>
-      <div class="card-body prose-stream" id="prose-stream" aria-live="polite">
+    </div>
+  </aside>
+
+  <!-- ============ CENTER STAGE — the canvas ============ -->
+  <section class="fw-center" aria-label="Manuscript canvas">
+
+    <!-- Playhead timeline: chapter progress + predictive ghost beats. -->
+    <header class="fw-timeline" id="playhead-timeline" aria-label="Chapter trajectory">
+      <span class="fw-timeline-label" id="timeline-chapter">—</span>
+      <div class="fw-timeline-track" id="timeline-track"></div>
+    </header>
+
+    <!-- The only globally meaningful scroll container for prose. -->
+    <div class="fw-canvas" id="canvas-scroll">
+      <div class="prose-stream" id="prose-stream" aria-live="polite">
         <div class="fw-empty" id="stream-empty">
-          No prose yet. Press <strong>Generate</strong> to begin —
-          generation keeps running in the background even if you leave this page.
+          The engine is idle. Press <strong>Generate</strong> below — the run
+          continues server-side even if you close this page.
         </div>
       </div>
     </div>
+
+    <!-- Glass Engine: the AI's internal monologue, terminal-styled. -->
+    <div class="fw-glass-engine" id="glass-engine" data-open="true">
+      <button class="fw-glass-toggle" id="glass-toggle" type="button"
+              aria-expanded="true" aria-controls="glass-log">
+        <span class="fw-glass-dot" aria-hidden="true"></span>
+        <span>Glass Engine</span>
+        <span class="fw-glass-caret" aria-hidden="true">▾</span>
+      </button>
+      <div class="fw-glass-log" id="glass-log" role="log" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- ============ RIGHT RAIL — telemetry ============ -->
+  <aside class="fw-rail fw-right-rail" id="right-rail" aria-label="Telemetry" data-collapsed="false">
+    <button class="fw-rail-collapse" id="rail-toggle" type="button"
+            title="Toggle telemetry" aria-label="Toggle telemetry panel">⟩</button>
+    <div class="fw-rail-body">
+      <div class="fw-panel">
+        <h6 class="fw-panel-title">PAD Emotional State</h6>
+        <canvas id="pad-radar" height="200"></canvas>
+      </div>
+      <div class="fw-panel">
+        <h6 class="fw-panel-title"
+            title="STEL cosine distance gates routing; Burrows' Delta is advisory only.">
+          Stylometric Drift
+        </h6>
+        <canvas id="drift-chart" height="140"></canvas>
+      </div>
+      <div class="fw-panel fw-panel-grow">
+        <h6 class="fw-panel-title">Pipeline Activity</h6>
+        <div class="fw-feed" id="activity-feed"></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ BOTTOM DOCK — command center ============ -->
+<footer class="fw-dock" id="statusbar" data-running="false" role="status">
+  <div class="fw-dock-state">
+    <span class="fw-status-dot" aria-hidden="true"></span>
+    <span class="fw-spinner" aria-hidden="true"></span>
+    <span class="fw-stage-label" id="stage-label">Idle</span>
   </div>
 
-  <!-- Telemetry sidebar -->
-  <div class="col-lg-4 d-flex flex-column gap-3">
-    <div class="card">
-      <div class="card-header">PAD Emotional State</div>
-      <div class="card-body"><canvas id="pad-radar" height="210"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header" data-bs-toggle="tooltip"
-           title="STEL cosine distance gates routing; Burrows' Delta is advisory only.">
-        Stylometric Drift
-      </div>
-      <div class="card-body"><canvas id="drift-chart" height="160"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header">Pipeline Activity</div>
-      <div class="card-body fw-feed" id="activity-feed"></div>
-    </div>
+  <div class="fw-dock-progress">
+    <div class="fw-progress" title="Committed words vs target"><div id="word-progress"></div></div>
+    <span class="fw-meta"><span id="word-count">0</span> / <span id="word-target">…</span> words</span>
+    <span class="fw-meta" id="beat-counter">beat —</span>
+    <span class="fw-meta" id="elapsed">00:00</span>
+  </div>
+
+  <div class="fw-dock-controls" role="group" aria-label="Generation controls">
+    <button class="fw-btn fw-btn-primary" id="btn-generate">Generate</button>
+    <button class="fw-btn" id="btn-pause">Pause</button>
+    <button class="fw-btn" id="btn-resume">Resume</button>
+    <button class="fw-btn fw-btn-danger" id="btn-stop">Hard Stop</button>
+  </div>
+</footer>
+
+<!-- Margin Inbox popover — single instance, repositioned next to the active dot. -->
+<div class="fw-margin-popover" id="margin-popover" hidden>
+  <div class="fw-margin-popover-body" id="margin-popover-body"></div>
+  <div class="fw-margin-popover-actions">
+    <button class="fw-btn fw-btn-good" id="margin-confirm" type="button">Confirm</button>
+    <button class="fw-btn fw-btn-warn" id="margin-contradict" type="button">Contradict</button>
   </div>
 </div>
 {% endblock %}
