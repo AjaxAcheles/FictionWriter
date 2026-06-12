@@ -296,6 +296,69 @@ def _extract_first_json_object(text: str) -> Optional[str]:
     return None
 
 
+_KEY_ALIASES = {
+    "ArcPlan": {
+        "chapter_stubs": ["chapters", "stubs", "chapter_list"],
+        "thread_events": ["threads", "events", "thread_list"],
+    },
+    "ChapterPlan": {
+        "scenes": ["schedule", "scene_list", "chapter_scenes"],
+    },
+    "BeatPlanList": {
+        "beats": ["beat_list", "partitions", "scene_beats"],
+    },
+}
+
+
+def _remap_keys(json_str: str, schema_name: str) -> Optional[str]:
+    """
+    Remap common LLM key-name aliases to schema canonical field names.
+
+    Purpose:
+        Zero-cost (no LLM call) tolerance shim. When the LLM ignores the prompt's
+        schema instruction and outputs e.g. 'chapters' instead of 'chapter_stubs',
+        this function rewrites the key to the canonical name so
+        model_validate_json passes without a retry.
+
+    Rules:
+        - Only applies to dicts (bare arrays pass through to the @model_validator).
+        - Skips remapping if the canonical key already exists, preventing duplicates.
+        - Returns None when no remapping was needed or the JSON is unparseable,
+          so the caller falls through to the existing retry/error path.
+
+    Cost: one json.loads / json.dumps round-trip — microseconds, zero network.
+    """
+    aliases = _KEY_ALIASES.get(schema_name)
+    if not aliases:
+        return None
+    try:
+        obj = json.loads(json_str)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    # Build reverse map: alias -> canonical
+    alias_to_canonical = {}
+    for canonical, alias_list in aliases.items():
+        for alias in alias_list:
+            alias_to_canonical[alias] = canonical
+
+    # If any canonical key already exists, skip remapping to avoid duplicates.
+    if any(canonical in obj for canonical in aliases):
+        return None
+
+    changed = False
+    new_obj = {}
+    for k, v in obj.items():
+        if k in alias_to_canonical:
+            new_obj[alias_to_canonical[k]] = v
+            changed = True
+        else:
+            new_obj[k] = v
+    return json.dumps(new_obj) if changed else None
+
+
 async def call_llm_structured(
     endpoint: EndpointConfig,
     messages: list[dict],
@@ -358,7 +421,15 @@ async def call_llm_structured(
             try:
                 return schema_model.model_validate_json(extracted)
             except ValidationError:
-                continue
+                pass
+            # Free key-remapping pass before burning another LLM call.
+            remapped = _remap_keys(extracted, schema_model.__name__)
+            if remapped is not None:
+                try:
+                    return schema_model.model_validate_json(remapped)
+                except ValidationError:
+                    pass
+            continue
 
     extracted = _extract_first_json_object(last_response)
     if extracted is not None:

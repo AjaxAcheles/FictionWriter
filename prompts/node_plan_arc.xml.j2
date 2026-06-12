@@ -38,9 +38,19 @@
   </context>
 
   <instruction>
-    Generate chapter stubs for this arc. For each chapter provide: id (arc_id prefixed),
-    arc_id, description, and status ("planned"). Also generate thread_events marking which
-    threads open, escalate, or close at which chapter index (0-based) within this arc.
+    Generate a chapter stub plan as a JSON object with exactly two top-level keys:
+
+    "chapter_stubs": a list of chapter stub objects, each with these fields:
+      "id": string (arc_id prefixed),
+      "arc_id": string,
+      "description": string,
+      "status": "planned"
+
+    "thread_events": a list of thread event objects, each with these fields:
+      "thread_id": string,
+      "event": "open" | "escalate" | "close",
+      "chapter_index": integer (0-based)
+
     Chapters should organically distribute the {{ word_count_budget }} word budget.
   </instruction>
 </prompt>

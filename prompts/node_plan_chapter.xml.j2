@@ -50,9 +50,15 @@
   </context>
 
   <instruction>
-    Generate a scene schedule for this chapter. Each scene needs: id (chapter_id prefixed),
-    chapter_id, description, word_budget (sum must approximate {{ chapter_word_budget }}),
-    ordering (integer, sequential from 0), status ("planned").
+    Generate a scene schedule as a JSON object with exactly one top-level key:
+
+    "scenes": a list of scene objects, each with these fields:
+      "id": string (chapter_id prefixed),
+      "chapter_id": string,
+      "description": string,
+      "word_budget": integer (sum must approximate {{ chapter_word_budget }}),
+      "ordering": integer (sequential from 0),
+      "status": "planned"
     {% if paradox_constraint %}
     HARD CONSTRAINT: No scene may involve or lead to: {{ paradox_constraint }}.
     Restructure the schedule to resolve active threads while avoiding this forbidden outcome.

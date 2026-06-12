@@ -50,14 +50,18 @@
   </context>
 
   <instruction>
-    Partition the scene into at least {{ beats_per_scene_min }} beats. For each beat:
-    - id: unique (scene_id prefixed), scene_id, beat_index (0-based)
-    - description: one-sentence summary of what happens
-    - word_budget: approx tokens (sum must equal {{ scene_word_budget }})
-    - entry_constraints: physical state at beat start (location, who is present, what just happened)
-    - exit_constraints: what must be true when this beat ends
-    - raw_pad_targets: target PAD coordinates for each character (EWMA projection using alpha={{ ewma_alpha }})
-    - pad_region: string key for the PAD lookup table (e.g., "high_pleasure_high_arousal")
-    - status: "planned"
+    Partition the scene into at least {{ beats_per_scene_min }} beats. Output a JSON object with exactly one top-level key:
+
+    "beats": a list of beat objects, each with these fields:
+      "id": string (scene_id prefixed),
+      "scene_id": string,
+      "beat_index": integer (0-based),
+      "description": string,
+      "word_budget": integer (sum must equal {{ scene_word_budget }}),
+      "entry_constraints": string,
+      "exit_constraints": string,
+      "raw_pad_targets": object mapping character_id to {"pleasure": float, "arousal": float, "dominance": float},
+      "pad_region": string (e.g., "high_pleasure_high_arousal"),
+      "status": "planned"
   </instruction>
 </prompt>
