@@ -235,8 +235,9 @@ def freeze_router(state: OrchestratorState) -> str:
                lands there; the node observes hard_stop_asserted and halts.
     """
     from core.config_loader import load_config
+    from routes import control  # lazy: POST /control/pause cannot mutate FSM state
 
-    if state.get("pause_requested") or state.get("hard_stop_asserted"):
+    if state.get("pause_requested") or state.get("hard_stop_asserted") or control.is_paused():
         return "node_human_intervention"
     tier = state.get("escalation_tier", 0)
     if tier in (1, 2):

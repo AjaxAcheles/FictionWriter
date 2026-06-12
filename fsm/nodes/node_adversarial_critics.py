@@ -46,6 +46,19 @@ logger = get_logger("node_adversarial_critics")
 CRITICS = ("continuity", "dialogue", "pacing")
 
 
+def _pause_flagged(state: OrchestratorState) -> bool:
+    """
+    True when a pause is pending — from FSM state OR the module-level flag set
+    by POST /control/pause. The route cannot mutate LangGraph state mid-run, so
+    the intercept points must consult both sources.
+    """
+    if state.get("pause_requested"):
+        return True
+    from routes import control  # lazy import: keeps fsm import-time independent of routes
+
+    return control.is_paused()
+
+
 async def _run_critic(critic: str, config, draft: str, package: dict, threads: list[dict]) -> FailureObject:
     """Fire one grammar-constrained critic call and return its FailureObject."""
     # PromptLoader runs StrictUndefined — every template variable must be present.
@@ -100,10 +113,10 @@ async def node_adversarial_critics(state: OrchestratorState) -> dict:
                 )
             )
             # Single intercept point after the gather completes (cloud mode).
-            _ = state.get("pause_requested")
+            _ = _pause_flagged(state)
         else:
             for critic in CRITICS:
-                if state.get("pause_requested"):
+                if _pause_flagged(state):
                     logger.info("pause_requested set — halting critic sequence after %d critics", len(results))
                     break
                 results.append(await _run_critic(critic, config, draft, package, threads))

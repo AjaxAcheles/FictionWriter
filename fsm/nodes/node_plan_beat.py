@@ -255,6 +255,13 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
             BeatPlanList,
             retry_cap=config.model_validate_retry_cap,
         )
+        if not plan.beats:
+            # An empty plan would reset the pointer to beat 0 (already committed)
+            # and spin the draft→commit loop forever without growing the scene.
+            raise RuntimeError(
+                f"node_plan_beat: planner returned an empty beat plan for scene "
+                f"{pointer.scene_id!r} — surfacing to the escalation ladder."
+            )
 
         regions = load_pad_regions()
         scene_intent = scene.get("description") or ""
@@ -311,7 +318,7 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
             if first_new_index is None:
                 first_new_index = beat_index
 
-        updated = pointer.model_copy(update={"beat_index": first_new_index or 0})
+        updated = pointer.model_copy(update={"beat_index": first_new_index})
         log_node_event(logger, updated.model_dump(), (time.monotonic() - start) * 1000.0, "success")
         return {"fsm_pointer": updated}
     except Exception as e:

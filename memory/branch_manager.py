@@ -181,24 +181,37 @@ def replay_events_after_snapshot(
 
     from memory.event_log import iter_events_after_checkpoint
     from memory.graphiti_client import _apply_event
-    from memory.sqlite_db import upsert_beat
+    from memory.sqlite_db import append_scene_prose, get_beat_by_index, upsert_beat
 
     for event in iter_events_after_checkpoint(log_path, snapshot_beat_id):
         if event.get("type") != "beat_commit":
             continue
-        # Idempotent SQLite replay (status only — prose deltas already live in
-        # beat_plan_json written by the original commit's upsert).
+        # Idempotent SQLite replay: restore the Beat row (plan + prose) and
+        # re-append the prose delta to the Scene. The Beat.status guard makes
+        # replaying an already-committed beat a no-op for the Scene append —
+        # the same double-append guard node_commit_transaction uses.
         if event.get("beat_id") and event.get("scene_id") is not None:
+            scene_id = event["scene_id"]
+            beat_index = event.get("beat_index", 0)
+            existing = get_beat_by_index(SQLITE_PATH, scene_id, beat_index)
+            already_committed = existing is not None and existing.get("status") == "committed"
+            prose = event.get("prose_delta", "")
+            word_count = event.get("word_count", len(prose.split()))
+            plan = _json.loads((existing or {}).get("beat_plan_json") or "{}")
             upsert_beat(
                 SQLITE_PATH,
                 {
                     "beat_id": event["beat_id"],
-                    "scene_id": event["scene_id"],
-                    "beat_index": event.get("beat_index", 0),
-                    "beat_plan_json": _json.dumps({"replayed": True, **{k: event[k] for k in ("word_count",) if k in event}}),
+                    "scene_id": scene_id,
+                    "beat_index": beat_index,
+                    "beat_plan_json": _json.dumps(
+                        {**plan, "prose": prose, "word_count": word_count, "replayed": True}
+                    ),
                     "status": "committed",
                 },
             )
+            if not already_committed and prose:
+                append_scene_prose(SQLITE_PATH, scene_id, prose, word_count)
         # Idempotent Graphiti replay (deterministic-UUID upsert chain).
         _apply_event(event)
 

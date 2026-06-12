@@ -72,7 +72,10 @@ async def ingest_manuscript(
     endpoint = config.endpoints.planner
     chunk_index = 0
     async for chunk in _chunk_text(
-        text, config.ingestion.sliding_window_tokens, endpoint.tokenizer_family
+        text,
+        config.ingestion.sliding_window_tokens,
+        endpoint.tokenizer_family,
+        model_name=endpoint.model_name,
     ):
         entities = await extract_entities(chunk, project_id)
         links = await resolve_coreferences(
@@ -92,6 +95,7 @@ async def _chunk_text(
     window_tokens: int,
     tokenizer_family: str,
     overlap_fraction: float = 0.5,
+    model_name: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """
     Yield overlapping text chunks from the input manuscript text.
@@ -122,7 +126,9 @@ async def _chunk_text(
     # The tokens-per-word ratio is measured on a leading sample for the routing
     # family in use — accurate enough for overlap continuity, cheap to compute.
     sample = " ".join(words[:500])
-    sample_tokens = max(1, count_tokens(sample, tokenizer_family))
+    # model_name is required by count_tokens for the hf_auto family — omitting
+    # it raised ValueError at runtime for any hf_auto-routed endpoint.
+    sample_tokens = max(1, count_tokens(sample, tokenizer_family, model_name))
     tokens_per_word = sample_tokens / max(1, len(words[:500]))
     window_words = max(1, int(window_tokens / tokens_per_word))
     step = max(1, int(window_words * (1.0 - overlap_fraction)))

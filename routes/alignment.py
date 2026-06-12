@@ -34,6 +34,11 @@ from quart import Blueprint, render_template, request
 
 alignment_bp = Blueprint("alignment", __name__)
 
+# Strong references to in-flight ingestion tasks. The event loop holds tasks
+# weakly — without this, a background ingestion can be garbage-collected
+# mid-flight (the same failure mode core/generation_manager.py guards against).
+_ingestion_tasks: set = set()
+
 
 @alignment_bp.route("/alignment")
 async def alignment_view():
@@ -93,5 +98,7 @@ async def ingest():
     await upload.save(target)
 
     config = load_config()
-    asyncio.get_event_loop().create_task(ingest_manuscript(target, config, "default"))
+    task = asyncio.create_task(ingest_manuscript(target, config, "default"))
+    _ingestion_tasks.add(task)
+    task.add_done_callback(_ingestion_tasks.discard)
     return {"status": "ingestion_started", "file": target.name}, 202

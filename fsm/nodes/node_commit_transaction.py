@@ -192,6 +192,10 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
                 "scene_id": pointer.scene_id,
                 "beat_index": pointer.beat_index,
                 "word_count": word_count,
+                # Crash-recovery contract (memory/event_log.py): the prose delta
+                # must ride in the beat_commit record so intra-chapter replay can
+                # restore Beat plans and Scene prose after a snapshot restore.
+                "prose_delta": draft,
                 "committed_at": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -199,10 +203,13 @@ async def node_commit_transaction(state: OrchestratorState) -> dict:
         # 5. intent → committed
         sqlite_db.mark_commit_intent_committed(db, intent_id)
         stream_bus.publish({"type": "beat_committed", "beat_id": beat_id, "word_count": word_count})
-        stream_bus.publish({"type": "word_count", "total": sqlite_db.get_total_word_count(db) + word_count})
+        # append_scene_prose already bumped this beat's words — no manual add.
+        stream_bus.publish({"type": "word_count", "total": sqlite_db.get_total_word_count(db)})
         for char_id, target in (plan.get("raw_pad_targets") or {}).items():
             stream_bus.publish({"type": "pad_update", "char_id": char_id, "pad": target})
-        stream_bus.publish({"type": "drift", "stel_dc": state.get("stylometric_distance", 0.0)})
+        # drift telemetry is published by node_programmatic_audit, which computes
+        # both stel_dc and burrows_delta — publishing a stel-only event here
+        # zeroed the advisory line on the UI drift graph.
 
         # Scene-advancement guard
         scene = sqlite_db.get_row(db, "Scenes", "scene_id", pointer.scene_id) or {}

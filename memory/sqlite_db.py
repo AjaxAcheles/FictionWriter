@@ -371,7 +371,13 @@ def get_remaining_chapters(db_path: Path, arc_id: str) -> list[dict]:
 
 def get_total_word_count(db_path: Path) -> int:
     """
-    Return SUM(word_count) across all committed Scene rows.
+    Return SUM(word_count) across all Scene rows.
+
+    Scenes.word_count is only ever incremented by append_scene_prose() at beat
+    commit time, so this sum is exactly the committed manuscript word count —
+    including beats already committed inside a still-open scene. (Filtering on
+    committed_at here undercounted open scenes and made the live UI total
+    disagree with /status until each scene closed.)
 
     Purpose:
         Called by edge_commit_router's arc exhaustion check to determine whether
@@ -387,7 +393,7 @@ def get_total_word_count(db_path: Path) -> int:
     """
     with closing(get_connection(db_path)) as conn:
         row = conn.execute(
-            "SELECT COALESCE(SUM(word_count), 0) FROM Scenes WHERE committed_at IS NOT NULL"
+            "SELECT COALESCE(SUM(word_count), 0) FROM Scenes"
         ).fetchone()
     return int(row[0])
 

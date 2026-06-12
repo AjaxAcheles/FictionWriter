@@ -26,7 +26,7 @@ Architecture role:
 import re
 import time
 
-from core import runtime
+from core import runtime, stream_bus
 from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import FailureObject, OrchestratorState
@@ -127,9 +127,12 @@ async def node_programmatic_audit(state: OrchestratorState) -> dict:
             )
 
         author_style = get_author_style(runtime.STYLES_DIR)
-        dc = compute_stel_cosine_distance(draft, author_style.get("frozen_baseline") or {})
+        dc = compute_stel_cosine_distance(draft, runtime.STYLES_DIR)
         delta = burrows_delta(draft, author_style.get("frozen_baseline") or {})
         logger.info("telemetry: burrows_delta=%.4f stel_dc=%.4f passive_density=%.2f", delta, dc, density)
+        # Drift telemetry is published here (where both metrics exist) — the UI
+        # drift graph plots stel_dc AND the advisory burrows_delta line.
+        stream_bus.publish({"type": "drift", "stel_dc": dc, "burrows_delta": delta})
 
         # best_seen_draft: fewest-failures rule. The failure count of the stored
         # best draft is tracked in best_seen_failure_count (in-memory only).
