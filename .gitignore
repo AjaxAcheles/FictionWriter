@@ -244,3 +244,6 @@ data/falkordb/
 falkordb_data/
 data/graphiti.db
 docker-compose.override.yml
+data/event_log.jsonl
+data/fictionwriter.db
+data/chroma/chroma.sqlite3

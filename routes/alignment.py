@@ -97,8 +97,21 @@ async def ingest():
     target.parent.mkdir(parents=True, exist_ok=True)
     await upload.save(target)
 
+    from core.logger import get_app_logger
+    log = get_app_logger()
+
     config = load_config()
+    log.info("ingestion started: %s", target.name)
     task = asyncio.create_task(ingest_manuscript(target, config, "default"))
     _ingestion_tasks.add(task)
-    task.add_done_callback(_ingestion_tasks.discard)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _ingestion_tasks.discard(t)
+        # A background task's exception is otherwise never observed — surface it.
+        if not t.cancelled() and t.exception() is not None:
+            log.error("ingestion failed for %s", target.name, exc_info=t.exception())
+        else:
+            log.info("ingestion complete: %s", target.name)
+
+    task.add_done_callback(_on_done)
     return {"status": "ingestion_started", "file": target.name}, 202

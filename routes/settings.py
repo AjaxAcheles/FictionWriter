@@ -113,9 +113,13 @@ async def update_settings():
     try:
         AppConfig(**candidate)
     except Exception as e:
+        from core.logger import get_app_logger
+        get_app_logger().warning("settings rejected — invalid candidate config: %s", e)
         return {"status": "error", "message": str(e)}, 400
 
     _rewrite_config_yaml(updates)
+    from core.logger import get_app_logger
+    get_app_logger().info("settings updated: %s", updates)
     return {"status": "updated", "applied": updates,
             "note": "changes take effect at the next beat boundary"}
 

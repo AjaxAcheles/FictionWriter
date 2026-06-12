@@ -112,7 +112,9 @@ async def stop():
     global hard_stop_asserted
     hard_stop_asserted = True
     from core import generation_manager, stream_bus
+    from core.logger import get_app_logger
     cancelled = generation_manager.cancel()
+    get_app_logger().info("hard stop asserted (task_cancelled=%s)", cancelled)
     stream_bus.publish({"type": "status", "status": "stopped"})
     return {"status": "stopped", "task_cancelled": cancelled}
 
@@ -171,5 +173,14 @@ async def reset():
     Outputs:
         JSON: {"status": "reset_complete"}
     """
-    await reset_resources(current_app.config["APP_CONFIG"])
+    from core.logger import get_app_logger
+
+    log = get_app_logger()
+    log.warning("DATA RESET requested — wiping all stores")
+    try:
+        await reset_resources(current_app.config["APP_CONFIG"])
+    except Exception:
+        log.error("DATA RESET failed", exc_info=True)
+        raise
+    log.warning("DATA RESET complete — all stores reinitialized")
     return {"status": "reset_complete"}

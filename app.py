@@ -21,12 +21,13 @@ Usage:
     uv run app.py
 """
 
+import traceback
 from pathlib import Path
 
-from quart import Quart
+from quart import Quart, request
 
 from core.config_loader import load_config
-from core.logger import configure_log_level
+from core.logger import configure_log_level, get_app_logger
 from core.runtime import init_resources
 from routes.dashboard import dashboard_bp
 from routes.control import control_bp
@@ -69,9 +70,30 @@ def create_app(config_path: Path = Path("config.yaml")) -> Quart:
     app.register_blueprint(codex_bp)
     app.register_blueprint(settings_bp)
 
+    log = get_app_logger()
+
     @app.before_serving
     async def startup() -> None:
+        log.info("server starting — initializing resources")
         await init_resources(app.config["APP_CONFIG"])
+        log.info("resources initialized — ready to serve")
+
+    @app.errorhandler(Exception)
+    async def log_unhandled(error: Exception):
+        """Last-resort handler — durably records any uncaught route exception.
+
+        Without this an error in a handler only prints an ASGI traceback to
+        stdout; here it lands in logs/app.log with the method, path, and full
+        traceback so failures are pinpointable after the fact. Re-raised so
+        Quart still produces its normal 500 response.
+        """
+        log.error(
+            "unhandled exception on %s %s\n%s",
+            request.method,
+            request.path,
+            "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        )
+        raise error
 
     return app
 

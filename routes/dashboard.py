@@ -161,16 +161,20 @@ async def status():
         with GET /codex/manuscript this fully rebuilds UI state after a reload.
     """
     from core import generation_manager, runtime
+    from core.logger import get_app_logger
     from memory import sqlite_db
 
+    log = get_app_logger()
     snapshot = generation_manager.snapshot()
     try:
         snapshot["committed_words"] = sqlite_db.get_total_word_count(runtime.SQLITE_PATH)
     except Exception:
+        log.warning("status: failed to read committed word count", exc_info=True)
         snapshot["committed_words"] = 0
     from core.config_loader import load_config
     try:
         snapshot["word_count_target"] = load_config().project.word_count_target
     except Exception:
+        log.warning("status: failed to read word_count_target from config", exc_info=True)
         snapshot["word_count_target"] = 0
     return snapshot

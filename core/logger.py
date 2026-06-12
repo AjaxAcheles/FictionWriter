@@ -140,6 +140,44 @@ def log_node_event(
     logger.info(json.dumps(entry))
 
 
+def get_app_logger() -> logging.Logger:
+    """
+    Return the shared web/routes-layer logger.
+
+    Purpose:
+        Creates (or retrieves from cache) a Logger that writes to logs/app.log
+        via a RotatingFileHandler (10MB, 5 backups). This is the logging channel
+        for the Quart layer — route handlers, control operations, and the global
+        exception handler in app.py. Without it, an unhandled error in a route
+        only surfaces as an ASGI traceback on stdout and leaves no durable record
+        for post-mortem debugging.
+
+        Unlike the FSM/LLM loggers (one JSON object per line), this logger uses a
+        human-readable timestamped format suited to ad-hoc operational debugging.
+
+        Idempotent — repeated calls return the same Logger instance.
+
+    Outputs:
+        logging.Logger: A configured Logger instance.
+    """
+    logger = logging.getLogger("app")
+    if not logger.handlers:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            _LOG_DIR / "app.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        )
+        logger.addHandler(handler)
+        logger.setLevel(_log_level)
+        logger.propagate = False
+    return logger
+
+
 def get_llm_io_logger() -> logging.Logger:
     """
     Return the shared LLM request/response logger.
