@@ -74,6 +74,16 @@
           config.yaml — edit the file directly or use the form fields; toggles take effect next session.</p>
       </div>
     </div>
+
+    <div class="card mt-3 border-danger">
+      <div class="card-header text-danger">Danger Zone</div>
+      <div class="card-body">
+        <p class="small text-secondary mb-2">Wipes all data stores (SQLite, Graphiti, ChromaDB,
+          snapshots, event log, style profiles) and reinitializes from scratch. Irreversible.</p>
+        <button class="btn btn-outline-danger btn-sm" id="btn-reset-all">Reset all data</button>
+        <span class="text-secondary small ms-2" id="reset-status"></span>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -96,6 +106,30 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   } catch (err) {
     window.fwToast(`Save failed: ${err.message}`, 'error', 8000);
   } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btn-reset-all').addEventListener('click', async () => {
+  if (!confirm('Reset ALL data? This deletes the manuscript, snapshots, characters, and style profiles permanently.')) return;
+  const btn = document.getElementById('btn-reset-all');
+  const status = document.getElementById('reset-status');
+  btn.disabled = true;
+  status.textContent = 'Resetting…';
+  try {
+    const res = await fetch('/control/reset', {method: 'POST'});
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.status === 'reset_complete') {
+      status.textContent = 'Done — all stores cleared.';
+      window.fwToast('Reset complete.', 'info');
+    } else {
+      status.textContent = data.message || `HTTP ${res.status}`;
+      window.fwToast(`Reset failed: ${data.message || res.status}`, 'error', 8000);
+      btn.disabled = false;
+    }
+  } catch (err) {
+    status.textContent = err.message;
+    window.fwToast(`Reset failed: ${err.message}`, 'error', 8000);
     btn.disabled = false;
   }
 });
