@@ -52,14 +52,16 @@
   const glass = $('glass-engine');
   const glassLog = $('glass-log');
 
-  function glassLine(text, kind = '') {
+  function glassLine(text, kind = '', markdown = false) {
     const row = document.createElement('div');
     row.className = 'fw-glass-line';
     if (kind) row.dataset.kind = kind;
     const t = document.createElement('time');
     t.textContent = new Date().toLocaleTimeString([], { hour12: false });
     const span = document.createElement('span');
-    span.textContent = text;
+    // Planning bullets arrive as markdown; everything else stays plain text.
+    if (markdown && window.marked) span.innerHTML = marked.parseInline(text);
+    else span.textContent = text;
     row.append(t, span);
     glassLog.appendChild(row);
     while (glassLog.children.length > 200) glassLog.firstChild.remove();
@@ -382,6 +384,10 @@
       setStage(ev.status);
       feed(`Status: ${ev.status}`, 'warn');
       glassLine(`status: ${ev.status}`, 'revise');
+      // Pause unlocks the active prose block for manual patching; resume (or
+      // stop) locks it again. Driven by SSE so it works from any tab.
+      if (ev.status === 'paused') enterPatchMode();
+      else exitPatchMode();
     },
     critic_result(ev) {
       const ok = ev.error_code === 'NONE';
@@ -404,6 +410,23 @@
       }
       ds.data = [ev.pad.pleasure ?? 0, ev.pad.arousal ?? 0, ev.pad.dominance ?? 0];
       padChart.update();
+    },
+    planning(ev) {
+      // Planning bullets from node_plan_global/chapter/beat — the Glass Engine
+      // narrates the structure as it forms; the feed keeps a short trail.
+      glassLine(ev.text || '', 'reflect', true);
+      feed(`Plan [${ev.level || '?'}]: ${ev.text || ''}`);
+    },
+    ingestion_progress(ev) {
+      glassLine(
+        `ingestion: ${ev.chunks_processed} chunks — ${ev.entities} entities, ${ev.links} links`,
+        'reflect'
+      );
+    },
+    ingestion_complete(ev) {
+      window.fwToast(`Manuscript ingestion complete — ${ev.chunks_processed} chunks processed.`);
+      feed(`Ingestion complete (${ev.chunks_processed} chunks)`, 'good');
+      glassLine(`ingestion complete — ${ev.chunks_processed} chunks`, 'locked');
     },
     drift(ev) {
       driftChart.data.labels.push(driftChart.data.labels.length + 1);
@@ -444,6 +467,55 @@
       }
       if (snap.last_error) feed(`Last error: ${snap.last_error}`, 'bad');
     },
+  });
+
+  /* ---------------- manual patching (pause → edit → submit) ---------------- */
+
+  // While paused, the most recent beat block becomes contenteditable; Submit
+  // Patch POSTs the edited prose to /control/patch (queued for
+  // node_human_intervention) and Resume applies it.
+  let patchEntry = null;
+
+  function enterPatchMode() {
+    if (patchEntry) return; // idempotent — pause click + SSE echo both land here
+    const beatId = activeBeatId || beatOrder[beatOrder.length - 1];
+    const entry = beatId && beats.get(beatId);
+    if (!entry) return; // nothing drafted yet — pause still works, just no editor
+    patchEntry = entry;
+    entry.textEl.contentEditable = 'plaintext-only';
+    if (!entry.textEl.isContentEditable) entry.textEl.contentEditable = 'true';
+    entry.block.classList.add('patch-editing');
+    $('btn-patch').hidden = false;
+    entry.textEl.focus();
+    glassLine('paused — prose editor unlocked for manual patching', 'revise');
+  }
+
+  function exitPatchMode() {
+    if (!patchEntry) return;
+    patchEntry.textEl.contentEditable = 'false';
+    patchEntry.block.classList.remove('patch-editing');
+    patchEntry = null;
+    $('btn-patch').hidden = true;
+  }
+
+  $('btn-patch').addEventListener('click', async () => {
+    if (!patchEntry) return;
+    const prose = patchEntry.textEl.innerText.trim();
+    try {
+      const res = await fetch('/control/patch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prose_edit: prose }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      window.fwToast(`Patch failed: ${e.message}`, 'error');
+      return;
+    }
+    window.fwToast('Patch queued — press Resume to apply it.');
+    feed('Manual patch submitted', 'warn');
+    glassLine('manual patch queued for human-intervention pass', 'revise');
+    exitPatchMode();
   });
 
   /* ---------------- controls ---------------- */

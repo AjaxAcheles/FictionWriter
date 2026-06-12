@@ -26,12 +26,13 @@ from typing import List
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from core import runtime
+from core import runtime, stream_bus
 from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
 from llm import call_llm as call_llm_module
 from memory import sqlite_db
+from memory.graphiti_client import query_point_in_time_subgraph
 from memory.raptor import get_raptor_summaries
 from prompts.prompt_loader import PromptLoader
 
@@ -48,6 +49,31 @@ class PlannedScene(BaseModel):
     description: str = ""
     word_budget: int = GRANULARITY_FLOOR_WORDS
     ordering: int = 0
+
+
+async def _character_locations(db, chapter_id: str) -> str:
+    """
+    Current LOCATED_IN facts for all characters, one per line.
+
+    Queried from the Graphiti point-in-time subgraph so the scene schedule
+    respects travel time and physical separation. Empty string when the graph
+    is degraded/empty (the stub driver returns no edges).
+    """
+    characters = sqlite_db.get_characters(db)
+    if not characters:
+        return ""
+    names = {c["char_id"]: c["name"] for c in characters}
+    edges = await query_point_in_time_subgraph(
+        entity_ids=list(names),
+        active_event_id=f"{chapter_id}_chapter_planning",
+    )
+    lines = []
+    for edge in edges or []:
+        if "located" not in (edge.get("edge_type") or "").lower():
+            continue
+        a = edge.get("entity_a_id", "?")
+        lines.append(f"- {names.get(a, a)} is in {edge.get('entity_b_id', '?')}")
+    return "\n".join(lines)
 
 
 class ChapterPlan(BaseModel):
@@ -124,6 +150,7 @@ async def node_plan_chapter(state: OrchestratorState) -> dict:
                 "raptor_chapter_summaries": summaries.get("chapter", ""),
                 "threads_priority_queue": json.dumps(threads),
                 "paradox_constraint": paradox,
+                "character_locations": await _character_locations(db, pointer.chapter_id),
             },
         )
         plan = await call_llm_module.call_llm_structured(
@@ -153,6 +180,12 @@ async def node_plan_chapter(state: OrchestratorState) -> dict:
                     "word_count": 0,
                 },
             )
+            stream_bus.publish({
+                "type": "planning",
+                "level": "chapter",
+                "chapter_id": pointer.chapter_id,
+                "text": f"scene {scene.id}: {scene.description}",
+            })
             if first_scene_id is None:
                 first_scene_id = scene.id
 

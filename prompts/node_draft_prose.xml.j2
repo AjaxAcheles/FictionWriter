@@ -29,6 +29,9 @@
     {{ raptor_scene_summary }}     str  — RAPTOR scene-level summary. Dropped first during pruning.
     {{ hnsw_flavor }}              str  — Associative flavor exemplars from ChromaDB. May be empty.
     {{ author_style_baseline }}    str  — Author voice description for stylistic consistency.
+    {{ trailing_prose }}           str  — Last ~300 words of committed prose immediately before
+                                          this beat (same scene, or prior scene's close). The
+                                          drafter continues seamlessly from it. May be empty.
 
   Output expected from model:
     Prose text only. No JSON, no headers, no scene labels, no word count annotations.
@@ -68,6 +71,10 @@
   <style_exemplars>{{ hnsw_flavor }}</style_exemplars>
   {% endif %}
 
+  {% if trailing_prose %}
+  <previous_prose>{{ trailing_prose }}</previous_prose>
+  {% endif %}
+
   <beat>
     <entry>{{ beat_entry_constraints }}</entry>
     <exit>{{ beat_exit_constraints }}</exit>
@@ -78,6 +85,11 @@
   <instruction>
     Write the prose for this beat. Honor the entry and exit constraints exactly.
     The emotional directive is mandatory — the characters' behavior must embody it.
+    {% if trailing_prose %}
+    Continue seamlessly from the prose in previous_prose: preserve the narrative
+    voice, physical blocking, and spatial/temporal continuity. Do not repeat or
+    re-narrate it.
+    {% endif %}
     Target {{ beat_word_budget }} words. No scene headers, no labels, prose only.
   </instruction>
 </prompt>

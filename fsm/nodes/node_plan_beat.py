@@ -44,12 +44,14 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from core import runtime
+from core import runtime, stream_bus
 from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
+from fsm.nodes.node_assemble_context import _edges_to_text, partition_coreference_links
 from fsm.state import OrchestratorState
 from llm import call_llm as call_llm_module
 from memory import sqlite_db
+from memory.graphiti_client import query_point_in_time_subgraph
 from prompts.prompt_loader import PromptLoader
 
 logger = get_logger("node_plan_beat")
@@ -179,9 +181,25 @@ async def _translate_pad_constraint(
     return baseline
 
 
-def _scene_entry_context(db: Path, scene_id: str) -> str:
-    """Last committed scene's closing prose — what just happened before this scene."""
+def _scene_entry_context(db: Path, scene_id: str, existing_count: int = 0) -> str:
+    """
+    What is physically true at the point this planning pass starts.
+
+    When the scene already has committed beats (scene extension after the
+    advancement guard kept it open), the binding context is the last committed
+    beat's exit_constraints — new beats must enter exactly where beat N-1
+    exited. Otherwise falls back to the last committed scene's closing prose.
+    """
     from contextlib import closing
+
+    if existing_count > 0:
+        prev = sqlite_db.get_beat_by_index(db, scene_id, existing_count - 1)
+        if prev is not None:
+            exit_constraints = (
+                json.loads(prev.get("beat_plan_json") or "{}").get("exit_constraints") or ""
+            )
+            if exit_constraints:
+                return exit_constraints
 
     scene = sqlite_db.get_row(db, "Scenes", "scene_id", scene_id)
     if scene is None:
@@ -238,6 +256,19 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
             pad_states[char["char_id"]] = ewma_pad(history, alpha)
 
         existing_count = sqlite_db.get_committed_beat_count(db, pointer.scene_id)
+
+        # World-state injection: the partitioner sees the same point-in-time
+        # facts and open threads the drafter will, so it cannot schedule
+        # physically impossible actions (items teleporting, dead threads).
+        edges = await query_point_in_time_subgraph(
+            entity_ids=[c["char_id"] for c in characters],
+            active_event_id=f"{pointer.scene_id}_beat_{existing_count}",
+        )
+        facts, _beliefs = partition_coreference_links(
+            list(edges or []), config.thresholds.coreference_confidence_floor
+        )
+        threads = sqlite_db.get_open_threads(db)
+
         prompt = loader.load_and_render("node_plan_beat.xml.j2",
             {
                 "scene_id": pointer.scene_id,
@@ -246,7 +277,12 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
                 "beats_per_scene_min": config.thresholds.beats_per_scene_min,
                 "character_pad_states": json.dumps(pad_states),
                 "ewma_alpha": alpha,
-                "scene_entry_context": _scene_entry_context(db, pointer.scene_id),
+                "scene_entry_context": _scene_entry_context(db, pointer.scene_id, existing_count),
+                "graphiti_facts": _edges_to_text(facts),
+                "thread_statuses": "\n".join(
+                    f"- {t['name']} (priority {t['priority']}): {t.get('description') or ''}"
+                    for t in threads
+                ),
             },
         )
         plan = await call_llm_module.call_llm_structured(
@@ -315,6 +351,12 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
                     "status": "planned",
                 },
             )
+            stream_bus.publish({
+                "type": "planning",
+                "level": "beat",
+                "scene_id": pointer.scene_id,
+                "text": f"beat {beat_index}: {beat.description}",
+            })
             if first_new_index is None:
                 first_new_index = beat_index
 

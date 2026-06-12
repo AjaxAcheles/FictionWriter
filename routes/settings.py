@@ -27,7 +27,7 @@ Architecture role:
       the endpoint status indicators on the Settings page.
 """
 
-from quart import Blueprint, render_template, request
+from quart import Blueprint, current_app, render_template, request
 
 settings_bp = Blueprint("settings", __name__)
 
@@ -111,13 +111,16 @@ async def update_settings():
         else:
             candidate[key] = value
     try:
-        AppConfig(**candidate)
+        validated = AppConfig(**candidate)
     except Exception as e:
         from core.logger import get_app_logger
         get_app_logger().warning("settings rejected — invalid candidate config: %s", e)
         return {"status": "error", "message": str(e)}, 400
 
     _rewrite_config_yaml(updates)
+    # Refresh the live singleton — consumers of app.config["APP_CONFIG"]
+    # (reset, init) must see the new values without a server restart.
+    current_app.config["APP_CONFIG"] = validated
     from core.logger import get_app_logger
     get_app_logger().info("settings updated: %s", updates)
     return {"status": "updated", "applied": updates,

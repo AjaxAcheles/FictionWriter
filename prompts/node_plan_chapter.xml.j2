@@ -24,6 +24,9 @@
                                         that caused this replan. Must be treated as a
                                         forbidden outcome — no scene may contradict it.
                                         Empty string on normal planning runs.
+    {{ character_locations }}  str  — Current LOCATED_IN facts per character from Graphiti
+                                        (one per line). The schedule must respect travel
+                                        time and physical separation. May be empty.
 
   Output expected from model:
     A scene schedule:
@@ -43,6 +46,9 @@
     <word_budget>{{ chapter_word_budget }}</word_budget>
     <prior_chapter_summaries>{{ raptor_chapter_summaries }}</prior_chapter_summaries>
     <active_threads>{{ threads_priority_queue }}</active_threads>
+    {% if character_locations %}
+    <character_locations>{{ character_locations }}</character_locations>
+    {% endif %}
     {% if paradox_constraint %}
     <forbidden_outcome>{{ paradox_constraint }}</forbidden_outcome>
     <constraint_type>thread_paradox_resolution</constraint_type>
@@ -59,6 +65,11 @@
       "word_budget": integer (sum must approximate {{ chapter_word_budget }}),
       "ordering": integer (sequential from 0),
       "status": "planned"
+    {% if character_locations %}
+    Characters start where character_locations places them. Scenes must respect
+    travel time and physical separation — a character cannot appear somewhere
+    new without a scene moving them there.
+    {% endif %}
     {% if paradox_constraint %}
     HARD CONSTRAINT: No scene may involve or lead to: {{ paradox_constraint }}.
     Restructure the schedule to resolve active threads while avoiding this forbidden outcome.

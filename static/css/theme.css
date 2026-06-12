@@ -406,6 +406,14 @@ body.fw-workspace-mode main {
 }
 @keyframes fw-blink { 50% { opacity: 0; } }
 
+/* Manual patch mode: the paused beat block becomes an inline editor. */
+.beat-block.patch-editing .beat-text {
+  outline: 1px dashed var(--fw-warn);
+  outline-offset: 6px;
+  border-radius: 2px;
+  caret-color: var(--fw-warn);
+}
+
 /* ---------- asynchronous margin inbox ---------- */
 
 .beat-margin {

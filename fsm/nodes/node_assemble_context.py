@@ -17,7 +17,11 @@ Purpose:
 
     Drop-priority pruning order (lowest-value context dropped first):
     1. HNSW flavor exemplars (hnsw_flavor)
-    2. RAPTOR scene-level summary (raptor_scene_summary)
+    2. RAPTOR arc-level summary (raptor_arc_summary)
+    3. RAPTOR chapter-level summary (raptor_chapter_summary)
+    4. RAPTOR scene-level summary (raptor_scene_summary)
+    The scene summary is the absolute last thing dropped — it is the drafter's
+    immediate continuity anchor; distant (arc/chapter) context goes first.
     After each drop the token budget is re-checked via fits_in_budget using the
     drafter endpoint's tokenizer_family routing.
 
@@ -86,6 +90,34 @@ def _edges_to_text(edges: list[dict]) -> str:
 def _package_text(package: dict) -> str:
     """Flatten the package for token counting."""
     return "\n".join(str(v) for v in package.values())
+
+
+def _trailing_prose(db, scene_id: str, word_limit: int = 300) -> str:
+    """
+    The last ~word_limit words of committed prose immediately preceding this
+    beat — the drafter's seamless-transition anchor (voice + physical blocking).
+
+    Prefers the active scene's own accumulated prose (previous beats in the
+    same scene); falls back to the closing prose of the last committed scene
+    in the same chapter when this is the scene's first beat.
+    """
+    from contextlib import closing
+
+    scene = sqlite_db.get_row(db, "Scenes", "scene_id", scene_id)
+    if scene is None:
+        return ""
+    prose = scene.get("prose_text") or ""
+    if not prose:
+        with closing(sqlite_db.get_connection(db)) as conn:
+            rows = conn.execute(
+                "SELECT prose_text FROM Scenes WHERE chapter_id = ? "
+                "AND committed_at IS NOT NULL AND scene_index < ? "
+                "ORDER BY scene_index DESC LIMIT 1",
+                (scene["chapter_id"], scene["scene_index"]),
+            ).fetchall()
+        prose = (rows[0]["prose_text"] if rows else "") or ""
+    words = prose.split()
+    return " ".join(words[-word_limit:])
 
 
 async def node_assemble_context(state: OrchestratorState) -> dict:
@@ -163,11 +195,18 @@ async def node_assemble_context(state: OrchestratorState) -> dict:
             "raptor_scene_summary": summaries.get("scene", ""),
             "hnsw_flavor": "\n---\n".join(f.get("text", "") for f in flavor),
             "author_style_baseline": json.dumps(author_style.get("frozen_baseline") or {}),
+            # Immediate continuity anchor — never in the drop-priority list.
+            "trailing_prose": _trailing_prose(db, pointer.scene_id),
         }
 
         # --- drop-priority pruning ---------------------------------------------
         endpoint = config.endpoints.drafter
-        for drop_key in ("hnsw_flavor", "raptor_scene_summary"):
+        for drop_key in (
+            "hnsw_flavor",
+            "raptor_arc_summary",
+            "raptor_chapter_summary",
+            "raptor_scene_summary",
+        ):
             if fits_in_budget(
                 _package_text(package),
                 endpoint.context_window,

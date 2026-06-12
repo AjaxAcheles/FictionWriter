@@ -21,8 +21,12 @@
                                        SQLite for all characters active in this scene.
                                        Format: {character_id: {pleasure, arousal, dominance}}.
     {{ ewma_alpha }}            float — EWMA alpha value for PAD acceleration (from config).
-    {{ scene_entry_context }}   str  — What has just happened before this scene starts
-                                       (last committed beat's exit state).
+    {{ scene_entry_context }}   str  — What is physically true at planning start: the last
+                                       committed beat's exit constraints when extending an
+                                       open scene, else the prior scene's closing prose.
+    {{ graphiti_facts }}        str  — Point-in-time temporal facts from Graphiti (locations,
+                                       possessions, relationships). May be empty.
+    {{ thread_statuses }}       str  — Open subplot threads with priorities. May be empty.
 
   Output expected from model:
     Beat partitions:
@@ -45,6 +49,10 @@
     <word_budget>{{ scene_word_budget }}</word_budget>
     <min_beats>{{ beats_per_scene_min }}</min_beats>
     <entry_context>{{ scene_entry_context }}</entry_context>
+    <world_state>
+      <facts>{{ graphiti_facts }}</facts>
+      <threads>{{ thread_statuses }}</threads>
+    </world_state>
     <character_emotional_states>{{ character_pad_states }}</character_emotional_states>
     <ewma_alpha>{{ ewma_alpha }}</ewma_alpha>
   </context>
@@ -63,5 +71,11 @@
       "raw_pad_targets": object mapping character_id to {"pleasure": float, "arousal": float, "dominance": float},
       "pad_region": string (e.g., "high_pleasure_high_arousal"),
       "status": "planned"
+
+    The first beat's entry_constraints must match the entry_context exactly.
+    Every beat must be physically possible given the world_state facts —
+    characters and objects are where the facts say they are; do not schedule
+    actions that contradict them. Beats may only advance threads listed in
+    world_state.
   </instruction>
 </prompt>

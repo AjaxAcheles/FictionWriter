@@ -22,7 +22,7 @@ from typing import List, Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from core import runtime
+from core import runtime, stream_bus
 from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
 from fsm.state import OrchestratorState
@@ -95,6 +95,14 @@ async def node_plan_global(state: OrchestratorState) -> dict:
         with closing(sqlite_db.get_connection(db)) as conn:
             existing = [dict(r) for r in conn.execute("SELECT * FROM Arcs ORDER BY created_at ASC")]
 
+        # Character roster: arcs must be character-driven, not purely
+        # plot-driven — the planner sees who exists before shaping the story.
+        characters = sqlite_db.get_characters(db)
+        roster = "\n".join(
+            f"- {c['name']} ({c.get('role') or 'character'}): {c.get('description') or ''}"
+            for c in characters
+        )
+
         prompt = PromptLoader().load_and_render(
             "node_plan_global.xml.j2",
             {
@@ -102,6 +110,7 @@ async def node_plan_global(state: OrchestratorState) -> dict:
                 "premise": config.project.premise,
                 "word_count_target": config.project.word_count_target,
                 "world_rules": "",  # populated by the Sprint 5 ingestion pipeline
+                "character_roster": roster,
                 "existing_arcs": json.dumps(
                     [{"arc_id": a["arc_id"], "title": a["title"], "summary": a["summary"]} for a in existing]
                 ),
@@ -125,6 +134,11 @@ async def node_plan_global(state: OrchestratorState) -> dict:
                 db, "Arcs",
                 {"arc_id": arc.id, "title": arc.title, "summary": arc.description, "created_at": now},
             )
+            stream_bus.publish({
+                "type": "planning",
+                "level": "global",
+                "text": f"arc {arc.id}: {arc.title} — {arc.description}",
+            })
             if first_arc_id is None and not _arc_completed(db, arc.id):
                 first_arc_id = arc.id
         for thread in plan.threads:

@@ -15,6 +15,9 @@
     {{ premise }}            str  — The one-paragraph story premise provided by the user.
     {{ word_count_target }}  int  — Total target word count for the manuscript (from config).
     {{ world_rules }}        str  — World-building rules and constraints from SQLite (may be empty).
+    {{ character_roster }}   str  — Character manifest from SQLite (name, role, description —
+                                    one per line). Arcs must be driven by these characters.
+                                    May be empty on a cold start before ingestion.
     {{ existing_arcs }}      str  — JSON or text summary of already-planned arcs (empty string
                                     if this is a first run; populated for continuation mode).
     {{ density_envelope }}   str  — Pacing density calculation: conflict count, character count,
@@ -40,6 +43,9 @@
   <context>
     <premise>{{ premise }}</premise>
     <world_rules>{{ world_rules }}</world_rules>
+    {% if character_roster %}
+    <character_roster>{{ character_roster }}</character_roster>
+    {% endif %}
     {% if existing_arcs %}
     <existing_arcs>{{ existing_arcs }}</existing_arcs>
     <mode>continuation</mode>
@@ -72,6 +78,10 @@
     Example shape (structure only):
     {"arcs": [{"id": "arc_1", "title": "...", "description": "...", "word_allocation": 1000}],
      "threads": [{"id": "th_1", "name": "...", "description": "...", "priority": 0.8}]}
+    {% if character_roster %}
+    Ground every arc in the characters listed in character_roster — arcs must be
+    driven by their goals and conflicts, not external plot alone.
+    {% endif %}
     {% if existing_arcs %}
     The existing arcs are already committed. Generate only continuation arcs that extend
     the story naturally from where it left off.

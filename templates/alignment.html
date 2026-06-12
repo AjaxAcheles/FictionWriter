@@ -85,6 +85,21 @@ document.getElementById('claim-cards').addEventListener('click', async (e) => {
   loadClaims();
 });
 document.getElementById('btn-reload-claims').addEventListener('click', loadClaims);
+// Live ingestion telemetry (SSE via main.js) — progress lands in the status
+// line; completion refreshes the claim queue the pipeline just populated.
+Object.assign(window.fwHandlers, {
+  ingestion_progress(ev) {
+    document.getElementById('ingest-status').textContent =
+      `Ingesting… ${ev.chunks_processed} chunks processed — ` +
+      `${ev.entities} entities, ${ev.links} provisional links.`;
+  },
+  ingestion_complete(ev) {
+    document.getElementById('ingest-status').textContent =
+      `Ingestion complete — ${ev.chunks_processed} chunks processed.`;
+    window.fwToast('Manuscript ingestion complete.');
+    loadClaims();
+  },
+});
 document.getElementById('ingest-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {

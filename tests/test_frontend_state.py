@@ -233,6 +233,7 @@ async def test_draft_prose_announces_beat_start(env, monkeypatch, bus_events):
         "character_states": "", "thread_statuses": "", "graphiti_facts": "",
         "epistemic_beliefs": "", "raptor_arc_summary": "", "raptor_chapter_summary": "",
         "raptor_scene_summary": "", "hnsw_flavor": "", "author_style_baseline": "{}",
+        "trailing_prose": "",
     }
 
     async def fake_stream(endpoint, messages, **kwargs):

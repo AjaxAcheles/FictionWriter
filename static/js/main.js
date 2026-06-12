@@ -82,7 +82,8 @@ window.fwResync = async function fwResync() {
   for (const type of [
     'pipeline_status', 'beat_start', 'draft_chunk', 'draft_complete', 'draft_replaced',
     'beat_committed', 'word_count', 'status', 'critic_result', 'pad_update', 'drift',
-    'generation_complete', 'generation_error', 'ingestion_progress', 'ingestion_complete',
+    'planning', 'generation_complete', 'generation_error',
+    'ingestion_progress', 'ingestion_complete',
   ]) source.addEventListener(type, (e) => dispatch(e.data));
 
   // Surface SSE drops: red status dot + one toast per disconnect episode
