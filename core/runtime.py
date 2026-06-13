@@ -12,10 +12,11 @@ Purpose:
 
     Also implements the reset sequence invoked by POST /control/reset:
     deletes data/fictionwriter.db, data/graphiti.db (directory), all snapshot ZIPs
-    in data/snapshots/, the event log, and all ChromaDB collection data — then
-    calls init_resources() to reinitialize everything from scratch. All stores
-    are file-based so the reset is a uniform file-deletion operation with no
-    server APIs or Docker calls required.
+    in data/snapshots/, the event log, all log files, all ChromaDB collection data,
+    provisional claims, eval reports, and exported manuscripts — then calls
+    init_resources() to reinitialize everything from scratch. All stores are
+    file-based so the reset is a uniform file-deletion operation with no server
+    APIs or Docker calls required.
 
 Architecture role:
     - Called once by app.py create_app() at server startup.
@@ -50,6 +51,8 @@ SQLITE_PATH = DATA_DIR / "fictionwriter.db"
 GRAPHITI_PATH = DATA_DIR / "graphiti.db"
 EVENT_LOG_PATH = DATA_DIR / "event_log.jsonl"
 EXPORTS_DIR = DATA_DIR / "exports"
+EVALS_DIR = DATA_DIR / "evals"
+PROVISIONAL_CLAIMS_PATH = DATA_DIR / "provisional_claims.json"
 
 
 async def init_resources(config: AppConfig) -> None:
@@ -107,10 +110,14 @@ async def reset_resources(config: AppConfig) -> None:
         Deletion targets:
         - data/fictionwriter.db (SQLite database file)
         - data/graphiti.db (FalkorDB Lite directory — removed recursively)
-        - data/snapshots/*.zip (all chapter-boundary snapshot archives)
+        - data/snapshots/ (entire directory — removes ZIPs, temp files, etc.)
         - data/event_log.jsonl (append-only event ledger)
         - ChromaDB collection data (via chroma_client.reset_collections())
         - data/styles/*.json (style store JSON files)
+        - data/provisional_claims.json (provisional coreference claims)
+        - data/evals/ (evaluation reports)
+        - data/exports/ (exported manuscripts)
+        - logs/*.log (log files — deleted, not truncated)
 
         All targets are file-based — no server API calls or Docker operations.
 
@@ -136,17 +143,28 @@ async def reset_resources(config: AppConfig) -> None:
     else:
         GRAPHITI_PATH.unlink(missing_ok=True)
 
-    for snapshot in SNAPSHOTS_DIR.glob("*.zip"):
-        snapshot.unlink()
+    # Remove the entire snapshots directory (ZIPs, temp _tmp_*.db files, etc.)
+    if SNAPSHOTS_DIR.exists():
+        shutil.rmtree(SNAPSHOTS_DIR)
 
     EVENT_LOG_PATH.unlink(missing_ok=True)
 
+    # Delete all log files (not just truncate them).
     for log_file in LOGS_DIR.glob("*.log"):
-        log_file.write_text("", encoding="utf-8")
+        log_file.unlink(missing_ok=True)
 
     reset_collections(DATA_DIR)
 
     for style_file in STYLES_DIR.glob("*.json"):
         style_file.unlink()
+
+    # Clean remaining artifact stores that were not covered by the above.
+    PROVISIONAL_CLAIMS_PATH.unlink(missing_ok=True)
+
+    if EVALS_DIR.exists():
+        shutil.rmtree(EVALS_DIR)
+
+    if EXPORTS_DIR.exists():
+        shutil.rmtree(EXPORTS_DIR)
 
     await init_resources(config)
