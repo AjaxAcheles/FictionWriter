@@ -105,6 +105,7 @@ def start(initial_state: dict, project_id: str = "default") -> bool:
     if is_running():
         return False
 
+    stream_bus.reset_live()  # clear the previous run's reattach snapshot
     _set(
         running=True, stage=None, stage_label="Starting pipeline…",
         project_id=project_id, started_at=datetime.now(timezone.utc).isoformat(),

@@ -33,7 +33,13 @@ Architecture role:
       boundaries before routing occurs — this router does not call it directly.
 """
 
+import json
+from datetime import datetime, timezone
+
+from core.logger import get_logger
 from fsm.state import OrchestratorState
+
+logger = get_logger("edge_commit_router")
 
 
 def edge_commit_router(state: OrchestratorState) -> str:
@@ -47,6 +53,10 @@ def edge_commit_router(state: OrchestratorState) -> str:
     3. Remaining chapters in the arc → "node_plan_chapter".
     4. Arcs exhausted, word target unmet → "node_plan_global" (continuation arc).
     5. Manuscript complete → "END".
+
+    Every decision is emitted as one structured JSON line to logs/fsm.log
+    (router/destination/reason/fsm_pointer) so a path that loops back into the
+    planning cascade can be traced post-mortem.
     """
     from core import runtime
     from core.config_loader import load_config
@@ -60,19 +70,25 @@ def edge_commit_router(state: OrchestratorState) -> str:
     #    scene-advancement guard keeping a short scene open for extension.)
     scene = sqlite_db.get_row(db, "Scenes", "scene_id", pointer.scene_id)
     if scene is not None and scene.get("committed_at") is None:
-        return "node_plan_beat"
-
+        destination, reason = "node_plan_beat", "scene_open"
     # 2. Remaining scenes in the current chapter (scene_index ASC).
-    if sqlite_db.get_remaining_scenes(db, pointer.chapter_id):
-        return "node_plan_chapter"
-
+    elif sqlite_db.get_remaining_scenes(db, pointer.chapter_id):
+        destination, reason = "node_plan_chapter", "scene_advance"
     # 3. Remaining chapters in the current arc.
-    if sqlite_db.get_remaining_chapters(db, pointer.arc_id):
-        return "node_plan_chapter"
-
+    elif sqlite_db.get_remaining_chapters(db, pointer.arc_id):
+        destination, reason = "node_plan_chapter", "chapter_advance"
     # 4. Arc exhaustion + word count check.
-    if sqlite_db.get_total_word_count(db) < config.project.word_count_target:
-        return "node_plan_global"
-
+    elif sqlite_db.get_total_word_count(db) < config.project.word_count_target:
+        destination, reason = "node_plan_global", "continuation_arc"
     # 5. Manuscript complete — Export Pipeline.
-    return "END"
+    else:
+        destination, reason = "END", "manuscript_complete"
+
+    logger.info(json.dumps({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "router": "edge_commit_router",
+        "destination": destination,
+        "reason": reason,
+        "fsm_pointer": pointer.model_dump(),
+    }))
+    return destination

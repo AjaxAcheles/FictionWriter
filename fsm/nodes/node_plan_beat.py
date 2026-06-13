@@ -257,6 +257,18 @@ async def node_plan_beat(state: OrchestratorState) -> dict:
 
         existing_count = sqlite_db.get_committed_beat_count(db, pointer.scene_id)
 
+        # Hard-ceiling fail-safe: the scene-extension path re-enters this node to
+        # add beats whenever the advancement guard keeps a scene open. A scene that
+        # never satisfies the guard would extend forever (silently, below the
+        # LangGraph recursion_limit backstop). Refuse to extend past the configured
+        # maximum, surfacing the runaway to the escalation ladder instead.
+        if existing_count >= config.thresholds.max_beats_per_scene:
+            raise RuntimeError(
+                f"node_plan_beat: scene {pointer.scene_id!r} already has {existing_count} "
+                f"committed beats (max_beats_per_scene={config.thresholds.max_beats_per_scene}) "
+                f"— refusing to extend; runaway loop surfaced to the escalation ladder."
+            )
+
         # World-state injection: the partitioner sees the same point-in-time
         # facts and open threads the drafter will, so it cannot schedule
         # physically impossible actions (items teleporting, dead threads).

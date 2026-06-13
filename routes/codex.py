@@ -35,6 +35,7 @@ Architecture role:
 """
 
 import json
+import sqlite3
 from contextlib import closing
 
 from quart import Blueprint, Response, render_template, request
@@ -64,8 +65,15 @@ async def get_characters():
     from core import runtime
     from memory import sqlite_db
 
+    # The Characters table may not exist yet on a fresh project (schema not
+    # initialized). Degrade to an empty panel rather than a fatal 500.
+    try:
+        chars = sqlite_db.get_characters(runtime.SQLITE_PATH)
+    except sqlite3.OperationalError:
+        return []
+
     result = []
-    for char in sqlite_db.get_characters(runtime.SQLITE_PATH):
+    for char in chars:
         history = sqlite_db.get_recent_character_emotions(runtime.SQLITE_PATH, char["char_id"], limit=1)
         pad = (
             {k: history[0][k] for k in ("pleasure", "arousal", "dominance")}
@@ -182,11 +190,17 @@ async def get_raptor_tree():
     from core import runtime
     from memory import sqlite_db
 
-    with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
-        rows = conn.execute(
-            "SELECT node_id, level, summary_text, created_at FROM RaptorNodes "
-            "ORDER BY level DESC, created_at DESC"
-        ).fetchall()
+    # RAPTOR summaries are populated only after the first chapter-boundary
+    # consolidation; the table may not exist on an early-stage project. Return an
+    # empty tree instead of a fatal 500 so the panel renders "tree is empty".
+    try:
+        with closing(sqlite_db.get_connection(runtime.SQLITE_PATH)) as conn:
+            rows = conn.execute(
+                "SELECT node_id, level, summary_text, created_at FROM RaptorNodes "
+                "ORDER BY level DESC, created_at DESC"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
     return [
         {"node_id": r["node_id"], "level": r["level"],
          "summary_text": r["summary_text"] or "", "created_at": r["created_at"]}

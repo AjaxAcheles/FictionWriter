@@ -133,6 +133,23 @@ async def node_plan_chapter(state: OrchestratorState) -> dict:
             log_node_event(logger, updated.model_dump(), (time.monotonic() - start) * 1000.0, "success")
             return {"fsm_pointer": updated}
 
+        # Hard-ceiling fail-safe: a planner that keeps scheduling scenes into a
+        # chapter that never satisfies the arc-exhaustion check would spin here
+        # indefinitely (silently, below the LangGraph recursion_limit backstop).
+        # Count what already exists and refuse to schedule past the configured
+        # maximum, surfacing the runaway to the escalation ladder instead.
+        from contextlib import closing
+        with closing(sqlite_db.get_connection(db)) as conn:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM Scenes WHERE chapter_id = ?", (pointer.chapter_id,)
+            ).fetchone()[0]
+        if existing >= config.thresholds.max_scenes_per_chapter:
+            raise RuntimeError(
+                f"node_plan_chapter: chapter {pointer.chapter_id!r} already has {existing} "
+                f"scenes (max_scenes_per_chapter={config.thresholds.max_scenes_per_chapter}) "
+                f"— refusing to schedule more; runaway loop surfaced to the escalation ladder."
+            )
+
         chapter = sqlite_db.get_row(db, "Chapters", "chapter_id", pointer.chapter_id) or {}
         arc = sqlite_db.get_row(db, "Arcs", "arc_id", pointer.arc_id) or {}
         threads = sqlite_db.get_open_threads(db)
@@ -159,12 +176,6 @@ async def node_plan_chapter(state: OrchestratorState) -> dict:
             ChapterPlan,
             retry_cap=config.model_validate_retry_cap,
         )
-
-        from contextlib import closing
-        with closing(sqlite_db.get_connection(db)) as conn:
-            existing = conn.execute(
-                "SELECT COUNT(*) FROM Scenes WHERE chapter_id = ?", (pointer.chapter_id,)
-            ).fetchone()[0]
 
         first_scene_id = None
         for offset, scene in enumerate(sorted(plan.scenes, key=lambda s: s.ordering)):

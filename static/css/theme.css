@@ -93,8 +93,10 @@ body.fw-workspace-mode {
   display: flex;
   flex-direction: column;
 }
-/* The left rail replaces the global navbar on the dashboard. */
-body.fw-workspace-mode .fw-nav { display: none; }
+/* The global navbar stays visible above the workspace for cross-page
+   navigation consistency; flex:0 0 auto reserves its height in the body's
+   flex column so the IDE grid below fills exactly the remaining viewport. */
+body.fw-workspace-mode .fw-nav { flex: 0 0 auto; }
 body.fw-workspace-mode main {
   flex: 1 1 auto;
   min-height: 0;

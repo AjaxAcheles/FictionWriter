@@ -122,6 +122,11 @@ class ThresholdsConfig(BaseModel):
         voice_evolution_l2_norm_limit: Max L2 drift per character style store (default 0.30).
         programmatic_fast_path_multiplier: Dc multiplier for _programmatic_router (default 0.7).
         beats_per_scene_min: Min committed beats before scene advances (default 2).
+        max_scenes_per_chapter: Hard ceiling on scenes scheduled into one chapter.
+            node_plan_chapter raises RuntimeError before exceeding it (runaway-loop
+            fail-safe below the LangGraph recursion_limit backstop; default 15).
+        max_beats_per_scene: Hard ceiling on committed beats per scene.
+            node_plan_beat raises RuntimeError before extending past it (default 10).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -134,6 +139,8 @@ class ThresholdsConfig(BaseModel):
     voice_evolution_l2_norm_limit: float = 0.30
     programmatic_fast_path_multiplier: float = 0.7
     beats_per_scene_min: int = 2
+    max_scenes_per_chapter: int = 15
+    max_beats_per_scene: int = 10
 
 
 class GenerationConfig(BaseModel):

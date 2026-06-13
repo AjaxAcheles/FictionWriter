@@ -102,14 +102,86 @@ async function loadEvents() {
   try { events = await fetchJson('/codex/events?limit=200'); }
   catch (err) { renderLoadError('events-host', 'event log', err); return; }
   const host = document.getElementById('events-host');
-  host.innerHTML = events.length ? '' : '<span class="text-secondary">Event log is empty.</span>';
+  host.innerHTML = '';
+  if (!events.length) {
+    host.innerHTML = '<span class="text-secondary">Event log is empty.</span>';
+    return;
+  }
+  // The .jsonl ledger has no timestamp field; records carry event/beat_id/
+  // fsm_pointer plus type-specific keys. Render a readable feed from those and
+  // keep the raw payload behind a per-row toggle instead of a wall of JSON.
   for (const e of events) {
+    const type = e.event || e.type || 'event';
+    const p = e.fsm_pointer || {};
+    const where = [p.chapter_id, p.scene_id].filter(Boolean).join(' / ');
+    const beatPart = (p.beat_index !== undefined && p.beat_index !== null) ? `#${p.beat_index}` : '';
+
+    const row = document.createElement('div');
+    row.className = `mb-2 p-2 border rounded ${type === 'beat_commit' ? 'border-success' : ''}`;
+
+    const head = document.createElement('div');
+    head.className = 'd-flex align-items-center gap-2 flex-wrap';
+    const badge = document.createElement('span');
+    badge.className = `badge ${type === 'beat_commit' ? 'bg-success' : 'bg-secondary'}`;
+    badge.textContent = type;
+    head.appendChild(badge);
+    if (e.beat_id) {
+      const b = document.createElement('code');
+      b.textContent = e.beat_id;
+      head.appendChild(b);
+    }
+    const locText = `${where}${beatPart ? ` ${beatPart}` : ''}`.trim();
+    if (locText) {
+      const loc = document.createElement('span');
+      loc.className = 'text-secondary';
+      loc.textContent = locText;
+      head.appendChild(loc);
+    }
+    row.appendChild(head);
+
+    // Human-readable detail line built from known payload keys.
+    const bits = [];
+    if (typeof e.prose_delta === 'string' && e.prose_delta.trim()) {
+      bits.push(`${e.prose_delta.trim().split(/\s+/).length} words committed`);
+    }
+    if (Array.isArray(e.thread_updates) && e.thread_updates.length) {
+      bits.push(`${e.thread_updates.length} thread update${e.thread_updates.length > 1 ? 's' : ''}`);
+    }
+    if (e.pad_states && typeof e.pad_states === 'object') {
+      const n = Object.keys(e.pad_states).length;
+      if (n) bits.push(`PAD updated for ${n} character${n > 1 ? 's' : ''}`);
+    }
+    if (bits.length) {
+      const detail = document.createElement('div');
+      detail.className = 'small text-secondary mt-1';
+      detail.textContent = bits.join(' · ');
+      row.appendChild(detail);
+    }
+
+    // Prose preview for commit events (textContent — never inject LLM text as HTML).
+    if (typeof e.prose_delta === 'string' && e.prose_delta.trim()) {
+      const txt = e.prose_delta.trim();
+      const preview = document.createElement('div');
+      preview.className = 'small mt-1 fst-italic';
+      preview.textContent = txt.length > 200 ? txt.slice(0, 200) + '…' : txt;
+      row.appendChild(preview);
+    }
+
+    // Raw payload, collapsed — power-user fallback without the wall of JSON.
+    const details = document.createElement('details');
+    details.className = 'mt-1';
+    const summary = document.createElement('summary');
+    summary.className = 'small text-secondary';
+    summary.textContent = 'raw';
     const pre = document.createElement('pre');
-    pre.className = `mb-2 p-2 border rounded ${e.type === 'beat_commit' || e.event === 'beat_commit' ? '' : 'text-warning'}`;
+    pre.className = 'mb-0 mt-1';
     const code = document.createElement('code');
     code.textContent = JSON.stringify(e, null, 2);
     pre.appendChild(code);
-    host.appendChild(pre);
+    details.append(summary, pre);
+    row.appendChild(details);
+
+    host.appendChild(row);
   }
 }
 

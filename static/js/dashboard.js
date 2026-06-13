@@ -480,6 +480,46 @@
         if (typeof snap.elapsed_s === 'number') startedAt = Date.now() - snap.elapsed_s * 1000;
         else if (snap.started_at) startedAt = Date.parse(snap.started_at);
       }
+
+      // Reattach the in-flight drafting block. Only rebuild when we have no
+      // local copy of it (a fresh reload that missed the beat_start event); if
+      // the block already exists, live SSE owns its text and re-seeding from a
+      // slightly stale snapshot would jump it backwards.
+      const ab = snap.active_beat;
+      if (ab && ab.beat_id && !beats.has(ab.beat_id)) {
+        beatBlock(ab.beat_id, {
+          description: ab.description || `Beat ${ab.beat_index}`,
+          sceneId: ab.scene_id || '',
+          state: snap.beat_state || 'drafting',
+          text: snap.draft_text || '',
+        });
+        activeBeatId = ab.beat_id;
+        $('beat-counter').textContent = `beat ${ab.beat_index ?? '—'}`;
+        if (ab.scene_id) $('timeline-chapter').textContent = ab.scene_id;
+        pinScroll();
+      }
+
+      // Re-seed the PAD radar from persisted emotions (idempotent — safe on
+      // every resync). Drift is not persisted; it resumes from live SSE.
+      if (Array.isArray(snap.pad_states)) {
+        for (const ps of snap.pad_states) {
+          let ds = padChart.data.datasets.find((d) => d.label === ps.char_id);
+          if (!ds) {
+            const color = padColors[padChart.data.datasets.length % padColors.length];
+            ds = { label: ps.char_id, data: [0, 0, 0], borderColor: color, backgroundColor: color + '2b' };
+            padChart.data.datasets.push(ds);
+          }
+          ds.data = [ps.pad.pleasure ?? 0, ps.pad.arousal ?? 0, ps.pad.dominance ?? 0];
+        }
+        padChart.update();
+      }
+
+      // Replay the engine log tail — only when the Glass Engine is empty, so a
+      // tab refocus mid-run doesn't duplicate lines already streamed live.
+      if (Array.isArray(snap.recent_logs) && glassLog.children.length === 0) {
+        for (const l of snap.recent_logs) glassLine(l.text, l.kind || '');
+      }
+
       if (snap.last_error) feed(`Last error: ${snap.last_error}`, 'bad');
     },
   });

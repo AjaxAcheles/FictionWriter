@@ -157,10 +157,13 @@ async def status():
     Purpose:
         A freshly loaded (or refocused) page calls this to resynchronize with a
         run that has been progressing in the background: running flag, current
-        pipeline stage label, node count, and committed word total. Combined
-        with GET /codex/manuscript this fully rebuilds UI state after a reload.
+        pipeline stage label, node count, committed word total, the in-flight
+        beat + its accumulated draft buffer, a short tail of engine log lines,
+        and per-character PAD state. Combined with GET /codex/manuscript this
+        fully rebuilds UI state after a reload — including the block that is
+        actively streaming tokens.
     """
-    from core import generation_manager, runtime
+    from core import generation_manager, runtime, stream_bus
     from core.logger import get_app_logger
     from memory import sqlite_db
 
@@ -177,4 +180,28 @@ async def status():
     except Exception:
         log.warning("status: failed to read word_count_target from config", exc_info=True)
         snapshot["word_count_target"] = 0
+
+    # Live reattach payload: the in-flight beat + draft buffer + recent engine
+    # log lines. The dashboard rebuilds the actively drafting block from this.
+    snapshot.update(stream_bus.live_snapshot())
+
+    # PAD re-seed: latest emotion vector per character so the radar chart isn't
+    # blank on reattach. (Stylometric drift is not persisted, so the drift line
+    # resumes from live SSE rather than being re-seeded here.)
+    try:
+        pad_states = []
+        for char in sqlite_db.get_characters(runtime.SQLITE_PATH):
+            history = sqlite_db.get_recent_character_emotions(
+                runtime.SQLITE_PATH, char["char_id"], limit=1
+            )
+            pad = (
+                {k: history[0][k] for k in ("pleasure", "arousal", "dominance")}
+                if history else {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0}
+            )
+            pad_states.append({"char_id": char["char_id"], "pad": pad})
+        snapshot["pad_states"] = pad_states
+    except Exception:
+        log.warning("status: failed to read PAD states", exc_info=True)
+        snapshot["pad_states"] = []
+
     return snapshot
