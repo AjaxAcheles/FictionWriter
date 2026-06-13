@@ -164,7 +164,7 @@ async def call_llm(
         payload["tool_choice"] = tool_choice
 
     headers = {"Authorization": f"Bearer {endpoint.api_key}"}
-    url = f"{endpoint.base_url.rstrip('/')}/chat/completions"
+    url = f"{endpoint.base_url.rstrip('/')}"
     start = time.monotonic()
 
     last_exc: Optional[Exception] = None

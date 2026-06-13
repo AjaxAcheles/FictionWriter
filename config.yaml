@@ -12,7 +12,7 @@
 project:
   word_count_target: 2000         # Target manuscript length in words. arc exhaustion check in _commit_router compares SUM(word_count) against this.
   genre: "slice of life and romance"     # Passed to node_plan_global as the manuscript genre.
-  premise: "A short story about a couple getting into a fight in their apartment and how they make up afterwards."
+  premise: "A VERY short story about a couple getting into a fight in their apartment and how they make up afterwards."
 
 log_level: "DEBUG"                   # Logging verbosity for fsm.log. Options: DEBUG, INFO, WARNING, ERROR.
 
@@ -27,7 +27,7 @@ thresholds:
   raptor_cluster_similarity: 0.65   # Cosine similarity threshold for RAPTOR scene clustering (Sprint 6 Leiden drop-in). Placeholder cluster_scenes() ignores this.
   voice_evolution_l2_norm_limit: 0.30  # Maximum L2-norm distance a character's evolved voice embedding may drift from their frozen baseline.
   programmatic_fast_path_multiplier: 0.7  # Dc multiplier applied in _programmatic_router fast path. Fast path fires only when Dc < stel_cosine_distance * this value.
-  beats_per_scene_min: 2            # Minimum number of beats that must be committed before node_plan_beat allows the scene pointer to advance.
+  beats_per_scene_min: 1            # Minimum number of beats that must be committed before node_plan_beat allows the scene pointer to advance.
   max_scenes_per_chapter: 15        # Hard ceiling. node_plan_chapter raises RuntimeError before scheduling beyond this many scenes in one chapter — a runaway-loop fail-safe below the LangGraph recursion_limit backstop.
   max_beats_per_scene: 10           # Hard ceiling. node_plan_beat raises RuntimeError before extending a scene past this many committed beats.
 
@@ -50,9 +50,9 @@ ingestion:
 # grammar_constraint_strategy options: "gbnf" (sampler-level grammar), "json_mode" (vendor JSON mode).
 endpoints:
   planner:                          # High-tier large model. Used by node_plan_global, node_plan_arc, node_plan_chapter.
-    base_url: "https://integrate.api.nvidia.com/v1"
+    base_url: "http://localhost:11434/v1" ### "https://integrate.api.nvidia.com/v1"
     api_key: "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"
-    model_name: "nvidia/nemotron-3-ultra-550b-a55b"
+    model_name: "cryptidbleh/gemma4-claude-opus-4.6" ### "nvidia/nemotron-3-ultra-550b-a55b"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -61,7 +61,7 @@ endpoints:
   drafter:                          # Mid-to-large-tier model. Used by node_draft_prose, node_revise_prose.
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "hf.co/mradermacher/Gemma-The-Writer-9B-HERETIC-Uncensored-Abliterated-i1-GGUF:Q5_K_M"
+    model_name: "cryptidbleh/gemma4-claude-opus-4.6" ### "hf.co/mradermacher/Gemma-The-Writer-9B-HERETIC-Uncensored-Abliterated-i1-GGUF:Q5_K_M"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -70,7 +70,7 @@ endpoints:
   critic:                           # High-tier model. Used by node_adversarial_critics (all 3 critic calls).
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "gemma4:e4b"
+    model_name: "ryptidbleh/gemma4-claude-opus-4.6"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -79,7 +79,7 @@ endpoints:
   pad_translator:                   # Fast small-tier model. Used by node_plan_beat PAD Grounded Translation Pipeline (step 3).
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "gemma4:e4b"
+    model_name: "ryptidbleh/gemma4-claude-opus-4.6"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false
@@ -88,7 +88,7 @@ endpoints:
   craft_consultant:                 # Small-to-mid-tier diagnostic model. Used by node_craft_consultant deadlock breaker.
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    model_name: "gemma4:e4b"
+    model_name: "ryptidbleh/gemma4-claude-opus-4.6"
     supports_inference_antislop: false
     tokenizer_family: "tiktoken"
     supports_concurrent_critics: false

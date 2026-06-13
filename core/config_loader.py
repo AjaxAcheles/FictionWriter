@@ -138,7 +138,7 @@ class ThresholdsConfig(BaseModel):
     raptor_cluster_similarity: float = 0.65
     voice_evolution_l2_norm_limit: float = 0.30
     programmatic_fast_path_multiplier: float = 0.7
-    beats_per_scene_min: int = 2
+    beats_per_scene_min: int = 1
     max_scenes_per_chapter: int = 15
     max_beats_per_scene: int = 10
 

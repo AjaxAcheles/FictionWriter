@@ -149,9 +149,18 @@ async def reset_resources(config: AppConfig) -> None:
 
     EVENT_LOG_PATH.unlink(missing_ok=True)
 
-    # Delete all log files (not just truncate them).
+    # Truncate all active log files in-place.
+    # We open-and-close in write mode (which truncates to zero bytes) rather than
+    # unlinking, because Python's RotatingFileHandler holds persistent file
+    # descriptors.  Deleting the files orphans those handles on most platforms
+    # (especially Windows), silently swallowing all subsequent log writes.
     for log_file in LOGS_DIR.glob("*.log"):
-        log_file.unlink(missing_ok=True)
+        log_file.open("w").close()
+
+    # Safely delete RotatingFileHandler backup files (*.log.1, *.log.2, …).
+    # These are not currently open so unlink is fine here.
+    for backup in LOGS_DIR.glob("*.log.*"):
+        backup.unlink(missing_ok=True)
 
     reset_collections(DATA_DIR)
 
