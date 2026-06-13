@@ -14,6 +14,11 @@ Purpose:
     Errors that exhaust all retries are surfaced as hard failures to the caller (FSM
     node), which then routes to node_freeze_and_escalate via edge_mode_selector.
 
+    Tool-call streaming: when call_llm() is given OpenAI-format tool definitions
+    (tools=...), it yields structured dict events — content deltas plus one final
+    assembled tool_calls event built from buffered argument fragments. When tools
+    is None (every pre-existing call site), behavior is unchanged: plain str chunks.
+
     Grammar constraints: if EndpointConfig.grammar_constraint_strategy is "gbnf",
     the compiled GBNF string from gbnf_compiler.py is included in the request payload.
     If "json_mode", the JSON mode flag is set on the request. Both paths are followed
@@ -79,7 +84,9 @@ async def call_llm(
     max_tokens: Optional[int] = None,
     stream: bool = True,
     grammar: Optional[str] = None,
-) -> AsyncIterator[str]:
+    tools: Optional[list[dict]] = None,
+    tool_choice: str = "auto",
+) -> AsyncIterator[str | dict]:
     """
     Send a chat completion request to an OpenAI-compatible inference endpoint.
 
@@ -110,10 +117,25 @@ async def call_llm(
         grammar: Optional[str] — GBNF grammar string for grammar-constrained endpoints.
             Included in the payload if endpoint.grammar_constraint_strategy is "gbnf".
             Ignored for "json_mode" endpoints.
+        tools: Optional[list[dict]] — OpenAI-format tool definitions. When provided,
+            "tools" and "tool_choice" are appended to the payload and the iterator
+            switches to dict events (see Outputs). When None (default), payload and
+            yield behavior are byte-identical to the pre-tools implementation.
+        tool_choice: str — OpenAI tool_choice value ("auto", "none", "required").
+            Only sent when tools is provided. Default "auto".
 
     Outputs:
-        AsyncIterator[str]: Yields token chunks (stream=True) or a single full
-            response string (stream=False). Callers use `async for chunk in call_llm(...)`.
+        AsyncIterator[str | dict]:
+            tools is None (backward-compatible mode): yields plain str token chunks
+                (stream=True) or a single full response string (stream=False),
+                exactly as before. Tool-call deltas, if any, are ignored.
+            tools provided: yields {"type": "content", "text": <str>} per content
+                delta, and — after the stream ends — one final
+                {"type": "tool_calls", "tool_calls": [{"id": ..., "type": "function",
+                "function": {"name": ..., "arguments": <complete JSON string>}}, ...]}
+                event if the model emitted tool calls. Argument fragments streamed
+                token-by-token are buffered per tool-call index and concatenated
+                into complete JSON strings before the final event is yielded.
 
     Raises:
         httpx.ConnectError / httpx.ReadTimeout: After all retries exhausted.
@@ -137,6 +159,9 @@ async def call_llm(
             payload["grammar"] = grammar
         elif endpoint.grammar_constraint_strategy == "json_mode":
             payload["response_format"] = {"type": "json_object"}
+    if tools is not None:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
 
     headers = {"Authorization": f"Bearer {endpoint.api_key}"}
     url = f"{endpoint.base_url.rstrip('/')}/chat/completions"
@@ -145,6 +170,7 @@ async def call_llm(
     last_exc: Optional[Exception] = None
     for attempt in range(MAX_ATTEMPTS):
         chunks: list[str] = []
+        tool_buffers: dict[int, dict] = {}
         yielded_any = False
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
@@ -152,20 +178,44 @@ async def call_llm(
                     async with client.stream("POST", url, json=payload, headers=headers) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():
-                            chunk = _parse_sse_line(line)
-                            if chunk is None:
+                            event = _parse_sse_line(line)
+                            if event is None:
                                 continue
-                            chunks.append(chunk)
-                            yielded_any = True
-                            yield chunk
+                            if event["type"] == "content":
+                                chunks.append(event["text"])
+                                yielded_any = True
+                                if tools is None:
+                                    yield event["text"]
+                                else:
+                                    yield event
+                            elif event["type"] == "tool_call_delta" and tools is not None:
+                                _buffer_tool_call_deltas(tool_buffers, event["tool_calls"])
+                    if tool_buffers:
+                        final_event = _assemble_tool_calls(tool_buffers)
+                        chunks.append(_tool_calls_repr(final_event["tool_calls"]))
+                        yielded_any = True
+                        yield final_event
                 else:
                     response = await client.post(url, json=payload, headers=headers)
                     response.raise_for_status()
                     body = response.json()
-                    full_text = body["choices"][0]["message"]["content"]
-                    chunks.append(full_text)
-                    yielded_any = True
-                    yield full_text
+                    message = body["choices"][0]["message"]
+                    if tools is None:
+                        full_text = message["content"]
+                        chunks.append(full_text)
+                        yielded_any = True
+                        yield full_text
+                    else:
+                        content = message.get("content")
+                        if content:
+                            chunks.append(content)
+                            yielded_any = True
+                            yield {"type": "content", "text": content}
+                        raw_tool_calls = message.get("tool_calls")
+                        if raw_tool_calls:
+                            chunks.append(_tool_calls_repr(raw_tool_calls))
+                            yielded_any = True
+                            yield {"type": "tool_calls", "tool_calls": raw_tool_calls}
 
             _log_call(payload, "".join(chunks), start)
             return
@@ -186,12 +236,15 @@ async def call_llm(
     raise last_exc  # type: ignore[misc]  # always set when loop exhausts
 
 
-def _parse_sse_line(line: str) -> Optional[str]:
+def _parse_sse_line(line: str) -> Optional[dict]:
     """
-    Extract the content delta from one OpenAI-format SSE line.
+    Extract the delta event from one OpenAI-format SSE line.
 
-    Returns the token chunk string, or None for blank lines, comments, [DONE]
-    sentinels, and deltas that carry no content (e.g., role-only first delta).
+    Returns:
+        {"type": "content", "text": <str>} for content deltas,
+        {"type": "tool_call_delta", "tool_calls": [<raw delta tool_calls list>]}
+        for tool-call deltas, or None for blank lines, comments, [DONE] sentinels,
+        and deltas that carry neither (e.g., role-only first delta).
     """
     line = line.strip()
     if not line or not line.startswith("data:"):
@@ -206,8 +259,60 @@ def _parse_sse_line(line: str) -> Optional[str]:
     choices = parsed.get("choices") or []
     if not choices:
         return None
-    content = (choices[0].get("delta") or {}).get("content")
-    return content if content else None
+    delta = choices[0].get("delta") or {}
+    content = delta.get("content")
+    if content:
+        return {"type": "content", "text": content}
+    tool_calls = delta.get("tool_calls")
+    if tool_calls:
+        return {"type": "tool_call_delta", "tool_calls": tool_calls}
+    return None
+
+
+def _buffer_tool_call_deltas(buffers: dict[int, dict], deltas: list[dict]) -> None:
+    """
+    Accumulate one SSE chunk's raw delta tool_calls entries into per-index buffers.
+
+    Purpose:
+        OpenAI-compatible servers stream tool calls fragmented: the first delta for
+        an index carries id and function.name; subsequent deltas append
+        function.arguments JSON-string fragments token-by-token. Each entry is keyed
+        by its "index" so parallel tool calls accumulate independently.
+    """
+    for entry in deltas:
+        buf = buffers.setdefault(entry.get("index", 0), {"id": "", "name": "", "arguments": ""})
+        if entry.get("id"):
+            buf["id"] = entry["id"]
+        fn = entry.get("function") or {}
+        if fn.get("name"):
+            buf["name"] += fn["name"]
+        if fn.get("arguments"):
+            buf["arguments"] += fn["arguments"]
+
+
+def _assemble_tool_calls(buffers: dict[int, dict]) -> dict:
+    """
+    Build the final {"type": "tool_calls", ...} event from buffered fragments.
+
+    Tool calls are emitted in index order, each in the complete OpenAI shape:
+    {"id": ..., "type": "function", "function": {"name": ..., "arguments": <json str>}}.
+    """
+    return {
+        "type": "tool_calls",
+        "tool_calls": [
+            {
+                "id": buf["id"],
+                "type": "function",
+                "function": {"name": buf["name"], "arguments": buf["arguments"]},
+            }
+            for _, buf in sorted(buffers.items())
+        ],
+    }
+
+
+def _tool_calls_repr(tool_calls: list[dict]) -> str:
+    """Textual representation of tool calls for the llm_io.log response field."""
+    return "[tool_calls] " + json.dumps(tool_calls)
 
 
 def _log_call(payload: dict, response_text: str, start: float, error: Optional[str] = None) -> None:

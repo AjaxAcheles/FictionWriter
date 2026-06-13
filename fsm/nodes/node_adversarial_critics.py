@@ -1,7 +1,7 @@
 """
 fsm/nodes/node_adversarial_critics.py
 
-Stage 2 Critics — three grammar-constrained LLM critic calls.
+Stage 2 Critics — three agentic, grammar-constrained LLM critics.
 
 Purpose:
     Executes the Continuity, Dialogue, and Pacing critics against the current
@@ -9,10 +9,22 @@ Purpose:
     False → strict serial execution (hard policy for resource-constrained
     endpoints); True → asyncio.gather for full parallel throughput.
 
-    Every critic call is grammar-constrained to the FailureObject schema via
-    call_llm_structured (GBNF or vendor JSON mode per endpoint). A critic that
-    finds no fault returns error_code "NONE" — these sentinels are filtered out
-    and never appended to critic_failures.
+    Each critic runs as a bounded "pull" agent rather than a one-shot call. It
+    is given the memory-retrieval tools from fsm/critic_tools.py and may call
+    them — RAPTOR summaries, the temporal knowledge graph, prior committed prose
+    — to verify a suspected continuity/lore/fact error before judging. The loop
+    runs at most MAX_AGENT_ITERATIONS turns: each turn streams the model's inner
+    monologue (agent_thought) to the dashboard, and any tool call is published
+    (agent_action), executed via execute_critic_tool, and its result published
+    (agent_observation) before being fed back as a tool-role message. The runtime
+    ToolContext (db_path, scene_id, active_event_id, chapter_id) is injected by
+    this node so the model can never point a tool at the wrong scene.
+
+    After the agent loop settles, the accumulated transcript is closed with a
+    final-verdict instruction and sent through the EXISTING grammar-constrained
+    call_llm_structured path (FailureObject, GBNF or vendor JSON mode per
+    endpoint). A critic that finds no fault returns error_code "NONE" — these
+    sentinels are filtered out and never appended to critic_failures.
 
     Thread-consistency check (Continuity critic): the open Threads table is
     injected into the continuity prompt; a contradiction with an open Thread's
@@ -36,7 +48,8 @@ import time
 from core import runtime, stream_bus
 from core.config_loader import load_config
 from core.logger import get_logger, log_node_event
-from fsm.state import FailureObject, OrchestratorState
+from fsm.critic_tools import CRITIC_TOOL_SCHEMAS, ToolContext, execute_critic_tool
+from fsm.state import FSM_Pointer, FailureObject, OrchestratorState
 from llm import call_llm as call_llm_module
 from memory import sqlite_db
 from prompts.prompt_loader import PromptLoader
@@ -44,6 +57,17 @@ from prompts.prompt_loader import PromptLoader
 logger = get_logger("node_adversarial_critics")
 
 CRITICS = ("continuity", "dialogue", "pacing")
+
+# Hard ceiling on tool-calling turns per critic before the forced final verdict.
+MAX_AGENT_ITERATIONS = 4
+
+# System instruction prepended to every critic's agentic transcript.
+_AGENT_SYSTEM_TEMPLATE = "node_adversarial_critics_agent_system.xml.j2"
+
+
+def _summarize_tool_result(result: str) -> str:
+    """Short human-readable digest of a raw tool result string for the bus."""
+    return result if len(result) <= 120 else result[:120] + "..."
 
 
 def _pause_flagged(state: OrchestratorState) -> bool:
@@ -59,8 +83,27 @@ def _pause_flagged(state: OrchestratorState) -> bool:
     return control.is_paused()
 
 
-async def _run_critic(critic: str, config, draft: str, package: dict, threads: list[dict]) -> FailureObject:
-    """Fire one grammar-constrained critic call and return its FailureObject."""
+def _build_tool_context(pointer: FSM_Pointer) -> ToolContext:
+    """Construct the runtime-scoped ToolContext for one critic from FSM state."""
+    return ToolContext(
+        db_path=runtime.SQLITE_PATH,
+        scene_id=pointer.scene_id,
+        active_event_id=f"{pointer.scene_id}_beat_{pointer.beat_index}",
+        chapter_id=getattr(pointer, "chapter_id", None),
+    )
+
+
+async def _run_critic(
+    critic: str, config, draft: str, package: dict, threads: list[dict], pointer: FSM_Pointer
+) -> FailureObject:
+    """
+    Run one critic as a bounded "pull" agent, then issue its final verdict.
+
+    The critic may call the memory-retrieval tools (CRITIC_TOOL_SCHEMAS) for up
+    to MAX_AGENT_ITERATIONS turns to verify suspected errors before the existing
+    grammar-constrained FailureObject call closes the transcript. The inner
+    monologue, tool actions, and tool observations stream to the dashboard.
+    """
     # PromptLoader runs StrictUndefined — every template variable must be present.
     context = {
         "current_draft": draft,
@@ -77,10 +120,70 @@ async def _run_critic(critic: str, config, draft: str, package: dict, threads: l
         "author_style_baseline": package.get("author_style_baseline", ""),
         "raptor_chapter_summary": package.get("raptor_chapter_summary", ""),
     }
-    prompt = PromptLoader().load_and_render(f"node_adversarial_critics_{critic}.xml.j2", context)
+    loader = PromptLoader()
+    system_prompt = loader.load_and_render(_AGENT_SYSTEM_TEMPLATE, {})
+    critic_prompt = loader.load_and_render(f"node_adversarial_critics_{critic}.xml.j2", context)
+    ctx = _build_tool_context(pointer)
+
+    messages: list[dict] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": critic_prompt},
+    ]
+
+    for _ in range(MAX_AGENT_ITERATIONS):
+        content_parts: list[str] = []
+        tool_calls: list[dict] = []
+        async for event in call_llm_module.call_llm(
+            config.endpoints.critic, messages, tools=CRITIC_TOOL_SCHEMAS
+        ):
+            if event["type"] == "content":
+                content_parts.append(event["text"])
+            elif event["type"] == "tool_calls":
+                tool_calls = event["tool_calls"]
+
+        content = "".join(content_parts)
+        if content:
+            stream_bus.publish({"type": "agent_thought", "critic": critic, "text": content})
+
+        if not tool_calls:
+            if content:
+                messages.append({"role": "assistant", "content": content})
+            break
+
+        messages.append({"role": "assistant", "content": content or None, "tool_calls": tool_calls})
+        for call in tool_calls:
+            name = call["function"]["name"]
+            raw_args = call["function"].get("arguments", "")
+            try:
+                args = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                args = {}
+            stream_bus.publish({"type": "agent_action", "critic": critic, "tool": name, "args": args})
+
+            result = await execute_critic_tool(name, args, ctx)
+            stream_bus.publish(
+                {
+                    "type": "agent_observation",
+                    "critic": critic,
+                    "tool": name,
+                    "summary": _summarize_tool_result(result),
+                    "result_chars": len(result),
+                }
+            )
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Based only on the draft and any verified tool results above, now issue "
+                "your final verdict as a single FailureObject JSON object."
+            ),
+        }
+    )
     failure = await call_llm_module.call_llm_structured(
         config.endpoints.critic,
-        [{"role": "user", "content": prompt}],
+        messages,
         FailureObject,
         retry_cap=config.model_validate_retry_cap,
     )
@@ -109,7 +212,7 @@ async def node_adversarial_critics(state: OrchestratorState) -> dict:
         if config.endpoints.critic.supports_concurrent_critics:
             results = list(
                 await asyncio.gather(
-                    *(_run_critic(c, config, draft, package, threads) for c in CRITICS)
+                    *(_run_critic(c, config, draft, package, threads, pointer) for c in CRITICS)
                 )
             )
             # Single intercept point after the gather completes (cloud mode).
@@ -119,7 +222,7 @@ async def node_adversarial_critics(state: OrchestratorState) -> dict:
                 if _pause_flagged(state):
                     logger.info("pause_requested set — halting critic sequence after %d critics", len(results))
                     break
-                results.append(await _run_critic(critic, config, draft, package, threads))
+                results.append(await _run_critic(critic, config, draft, package, threads, pointer))
 
         failures = [f for f in results if f.error_code.upper() != "NONE"]
         paradoxes = [f for f in failures if f.error_code == "THREAD_PARADOX"]
