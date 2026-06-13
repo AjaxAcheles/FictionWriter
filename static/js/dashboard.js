@@ -401,6 +401,21 @@
         });
       }
     },
+    // Adversarial-critic agent loop: thought → tool call → observation,
+    // streamed into the Glass Engine so the user watches the agent reason.
+    agent_thought(ev) {
+      const who = ev.critic ? `[${ev.critic}] ` : '';
+      glassLine(`${who}Critic thinking: ${ev.text || ''}`, 'thought');
+    },
+    agent_action(ev) {
+      let args = '';
+      try { args = JSON.stringify(ev.args ?? {}); } catch { args = '…'; }
+      if (args.length > 80) args = args.slice(0, 77) + '…';
+      glassLine(`[ACTION] ${ev.tool || '?'}(${args})`, 'action');
+    },
+    agent_observation(ev) {
+      glassLine(`[OBSERVATION] ${ev.summary || ''}`, 'observation');
+    },
     pad_update(ev) {
       let ds = padChart.data.datasets.find((d) => d.label === ev.char_id);
       if (!ds) {

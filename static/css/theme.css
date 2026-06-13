@@ -513,6 +513,9 @@ body.fw-workspace-mode main {
 .fw-glass-line[data-kind="revise"]  span { color: var(--sem-revise); }
 .fw-glass-line[data-kind="locked"]  span { color: var(--sem-locked); }
 .fw-glass-line[data-kind="bad"]     span { color: var(--fw-bad); }
+.fw-glass-line[data-kind="thought"]     span { color: var(--fw-text-dim); font-style: italic; }
+.fw-glass-line[data-kind="action"]      span { color: var(--fw-accent); }
+.fw-glass-line[data-kind="observation"] span { color: var(--fw-good); }
 
 /* ================================================================
    BOTTOM DOCK — command center
